@@ -24,6 +24,8 @@
 #   Target for the ArrayFire oneAPI backend.
 # ``ArrayFire::afopencl``
 #   Target for the ArrayFire OpenCL backend.
+# ``ArrayFire::afmetal``
+#   Target for the ArrayFire Metal backend.
 #
 # These targets can be used to link with your application using the
 # ``target_link_library`` command. Here is an example of how to use these
@@ -72,6 +74,11 @@
 # ``ArrayFire_OpenCL_LIBRARIES``
 #   Location of ArrayFire's OpenCL library, if found
 #
+# ``ArrayFire_Metal_FOUND``
+#   True of the ArrayFire Metal library has been found.
+# ``ArrayFire_Metal_LIBRARIES``
+#   Location of ArrayFire's Metal library, if found
+#
 # ``ArrayFire_Unified_FOUND``
 #   True of the ArrayFire Unified library has been found.
 # ``ArrayFire_Unified_LIBRARIES``
@@ -92,7 +99,7 @@
 
 set_and_check(ArrayFire_INCLUDE_DIRS @PACKAGE_INCLUDE_DIRS@)
 
-foreach(backend Unified CPU oneAPI OpenCL CUDA)
+foreach(backend Unified CPU oneAPI OpenCL CUDA Metal)
   if(backend STREQUAL "Unified")
     set(lowerbackend "")
   else()
@@ -147,4 +154,4 @@ foreach(_comp ${ArrayFire_FIND_COMPONENTS})
   endif()
 endforeach()
 
-check_required_components(CPU oneAPI OpenCL CUDA Unified)
+check_required_components(CPU oneAPI OpenCL CUDA Metal Unified)

@@ -26,7 +26,7 @@ readable math-resembling notation. Expertise in parallel programming _is not_
 required to use ArrayFire.
 
 A few lines of ArrayFire code accomplishes what can take 100s of complicated
-lines in CUDA, oneAPI, or OpenCL kernels.
+lines in CUDA, oneAPI, Metal, or OpenCL kernels.
 
 ## ArrayFire is extensive!
 
@@ -61,7 +61,7 @@ CUDA, oneAPI, or OpenCL code.
 
 ## Code once, run anywhere!
 
-With support for x86, ARM, CUDA, oneAPI, and OpenCL devices, ArrayFire
+With support for x86, ARM, CUDA, oneAPI, Metal, and OpenCL devices, ArrayFire
 supports for a comprehensive list of devices.
 
 Each ArrayFire installation comes with:
@@ -71,8 +71,9 @@ Each ArrayFire installation comes with:
   devices](https://www.intel.com/content/www/us/en/developer/articles/system-requirements/intel-oneapi-base-toolkit-system-requirements.html),
 - an OpenCL backend (named 'libafopencl') for [OpenCL
   devices](http://www.khronos.org/conformance/adopters/conformant-products#opencl),
+- a Metal backend (named 'libafmetal') for Apple silicon GPUs on macOS,
 - a CPU backend (named 'libafcpu') to fall back to when CUDA, oneAPI, or
-  OpenCL devices are unavailable.
+  Metal or OpenCL devices are unavailable.
 
 ## ArrayFire is highly efficient
 
@@ -80,7 +81,7 @@ Each ArrayFire installation comes with:
 
 ArrayFire supports batched operations on N-dimensional arrays. Batch
 operations in ArrayFire are run in parallel ensuring an optimal usage of CUDA,
-oneAPI, or OpenCL devices.
+oneAPI, Metal, or OpenCL devices.
 
 Best performance with ArrayFire is achieved using
 [vectorization techniques](\ref vectorization).

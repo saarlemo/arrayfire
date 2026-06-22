@@ -418,7 +418,8 @@ typedef enum {
     AF_BACKEND_CPU     = 1,  ///< CPU a.k.a sequential algorithms
     AF_BACKEND_CUDA    = 2,  ///< CUDA Compute Backend
     AF_BACKEND_OPENCL  = 4,  ///< OpenCL Compute Backend
-    AF_BACKEND_ONEAPI  = 8   ///< OneAPI Compute Backend
+    AF_BACKEND_ONEAPI  = 8,  ///< OneAPI Compute Backend
+    AF_BACKEND_METAL   = 16  ///< Metal Compute Backend
 } af_backend;
 #endif
 

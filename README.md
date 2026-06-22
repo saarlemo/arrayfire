@@ -22,8 +22,8 @@ Several of ArrayFire's benefits include:
 * [Easy to use](http://arrayfire.org/docs/gettingstarted.htm), stable,
   [well-documented](http://arrayfire.org/docs) API
 * Rigorous benchmarks and tests ensuring top performance and numerical accuracy
-* Cross-platform compatibility with support for CUDA, oneAPI, OpenCL, and
-  native CPU on Windows, Mac, and Linux
+* Cross-platform compatibility with support for CUDA, oneAPI, Metal, OpenCL,
+  and native CPU on Windows, Mac, and Linux
 * Built-in visualization functions through
   [Forge](https://github.com/arrayfire/forge)
 * Commercially friendly open-source licensing
@@ -36,9 +36,9 @@ translated into near-optimal kernels that execute on the computational device.
 
 ArrayFire runs on devices ranging from low-power mobile phones to high-power
 GPU-enabled supercomputers. ArrayFire runs on CPUs from all major vendors
-(Intel, AMD, ARM), GPUs from the prominent manufacturers (AMD, Intel, NVIDIA,
-and Qualcomm), as well as a variety of other accelerator devices on Windows,
-Mac, and Linux.
+(Intel, AMD, ARM), GPUs from the prominent manufacturers (AMD, Apple, Intel,
+NVIDIA, and Qualcomm), as well as a variety of other accelerator devices on
+Windows, Mac, and Linux.
 
 # Getting ArrayFire
 

@@ -58,6 +58,7 @@ std::ostream &operator<<(std::ostream &os, af::Backend bk) {
         case AF_BACKEND_CUDA: os << "AF_BACKEND_CUDA"; break;
         case AF_BACKEND_OPENCL: os << "AF_BACKEND_OPENCL"; break;
         case AF_BACKEND_ONEAPI: os << "AF_BACKEND_ONEAPI"; break;
+        case AF_BACKEND_METAL: os << "AF_BACKEND_METAL"; break;
         case AF_BACKEND_DEFAULT: os << "AF_BACKEND_DEFAULT"; break;
     }
     return os;

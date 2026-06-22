@@ -57,6 +57,7 @@ how to use CMake. To link with a specific backend directly, replace the
 
 * `ArrayFire::afcpu` for CPU backend.
 * `ArrayFire::afcuda` for CUDA backend.
+* `ArrayFire::afmetal` for Metal backend.
 * `ArrayFire::afopencl` for OpenCL backend.
 
 Next we need to instruct CMake to create build instructions and then compile. We
@@ -92,8 +93,8 @@ followed our installation instructions.
 Similarly, you will need to specify the path to the ArrayFire library using the
 `-L` option (e.g. `-L/opt/arrayfire/lib`) followed by the specific ArrayFire
 library you wish to use using the `-l` option (for example `-lafcpu`,
-`-lafopencl`, `-lafcuda`, or `-laf` for the CPU, OpenCL, CUDA, and unified
-backends respectively.
+`-lafopencl`, `-lafcuda`, `-lafmetal`, or `-laf` for the CPU, OpenCL, CUDA,
+Metal, and unified backends respectively.
 
 Here is a minimal example Makefile which uses ArrayFire's CPU backend:
 

@@ -7,7 +7,8 @@ Unified Backend {#unifiedbackend}
 
 The Unified backend was introduced in ArrayFire with version 3.2.
 While this is not an independent backend, it allows the user to switch between
-the different ArrayFire backends (CPU, CUDA, oneAPI and OpenCL) at runtime.
+the different ArrayFire backends (CPU, CUDA, oneAPI, Metal and OpenCL) at
+runtime.
 
 # Compiling with Unified
 
@@ -24,7 +25,7 @@ To use with CMake, use the __ArrayFire_Unified_LIBRARIES__ variable.
 # Using the Unified Backend
 
 The Unified backend will try to dynamically load the backend libraries. The
-priority of backends is __CUDA -> oneAPI -> OpenCL -> CPU__
+priority of backends is __CUDA -> oneAPI -> Metal -> OpenCL -> CPU__.
 
 The most important aspect to note here is that all the libraries the ArrayFire
 libs depend on need to be in the environment paths
@@ -49,6 +50,7 @@ To select a backend, call the af::setBackend function as shown below.
 
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~{.c}
 af::setBackend(AF_BACKEND_CUDA);    // Sets CUDA as current backend
+af::setBackend(AF_BACKEND_METAL);   // Sets Metal as current backend
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 To get the count of the number of backends available (the number of `libaf*`
@@ -102,6 +104,15 @@ int main()
         testBackend();
     } catch (af::exception& e) {
         printf("Caught exception when trying OpenCL backend\n");
+        fprintf(stderr, "%s\n", e.what());
+    }
+
+    try {
+        printf("Trying Metal Backend\n");
+        af::setBackend(AF_BACKEND_METAL);
+        testBackend();
+    } catch (af::exception& e) {
+        printf("Caught exception when trying Metal backend\n");
         fprintf(stderr, "%s\n", e.what());
     }
 
@@ -159,6 +170,17 @@ This output would be:
         0.2126     0.7509     0.6450     0.8962
         0.0655     0.4105     0.9675     0.3712
 
+    Trying Metal Backend
+    ArrayFire v3.10.0 (Metal, 64-bit Mac OSX)
+    [0] Apple: Apple M4, 12124 MB, Metal, unified memory
+    af::randu(5, 4)
+    [5 4 1 1]
+        0.6010     0.5497     0.1583     0.3636
+        0.0278     0.2864     0.3712     0.4165
+        0.9806     0.3410     0.3543     0.5814
+        0.2126     0.7509     0.6450     0.8962
+        0.0655     0.4105     0.9675     0.3712
+
 
 # Dos and Don'ts
 
@@ -196,15 +218,15 @@ int main()
 ### Do: Use a naming scheme to track arrays and backends
 
 We recommend that you use a technique to track the arrays on the backends. One
-suggested technique would be to use a suffix of `_cpu`, `_cuda`, `_opencl`
-with the array names. So an array created on the CUDA backend would be named
-`myarray_cuda`.
+suggested technique would be to use a suffix of `_cpu`, `_cuda`, `_metal`, or
+`_opencl` with the array names. So an array created on the CUDA backend would
+be named `myarray_cuda`.
 
 If you have not used the af::setBackend function anywhere in your code, then
 you do not have to worry about this as all the arrays will be created on the
 same default backend.
 
-### Don't: Do not use custom kernels (CUDA/OpenCL) with the Unified backend
+### Don't: Do not use custom kernels (CUDA/Metal/OpenCL) with the Unified backend
 
 This is another area that is a no go when using the Unified backend. It not
 recommended that you use custom kernels with unified backend. This is mainly

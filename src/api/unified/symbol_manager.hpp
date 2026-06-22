@@ -24,7 +24,7 @@
 namespace arrayfire {
 namespace unified {
 
-const int NUM_BACKENDS = 4;
+const int NUM_BACKENDS = 5;
 
 #define UNIFIED_ERROR_LOAD_LIB()                                       \
     AF_RETURN_ERROR(                                                   \
@@ -39,6 +39,7 @@ static inline int backend_index(af::Backend be) {
         case AF_BACKEND_CUDA: return 1;
         case AF_BACKEND_OPENCL: return 2;
         case AF_BACKEND_ONEAPI: return 3;
+        case AF_BACKEND_METAL: return 4;
         default: return -1;
     }
 }

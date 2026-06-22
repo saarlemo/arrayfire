@@ -9,6 +9,7 @@
 * [Array and Matrix Manipulation](\ref matrixmanipulation)
 * [CUDA Interoperability](\ref interop_cuda)
 * [OpenCL Interoperability](\ref interop_opencl)
+* [Metal Backend](\ref metal_backend)
 * [Unified Backend](\ref unifiedbackend)
 * [Forge Visualization](\ref forge_visualization)
 * [Indexing](\ref indexing)

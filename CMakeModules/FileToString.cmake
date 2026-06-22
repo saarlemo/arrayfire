@@ -26,7 +26,7 @@
 set(BIN2CPP_PROGRAM "bin2cpp")
 
 function(FILE_TO_STRING)
-    cmake_parse_arguments(RTCS "WITH_EXTENSION;NULLTERM" "VARNAME;EXTENSION;OUTPUT_DIR;TARGETS;NAMESPACE;BINARY" "SOURCES" ${ARGN})
+    cmake_parse_arguments(RTCS "WITH_EXTENSION;NULLTERM;NO_INCLUDE" "VARNAME;EXTENSION;OUTPUT_DIR;TARGETS;NAMESPACE;BINARY" "SOURCES" ${ARGN})
 
     set(_output_files "")
     foreach(_input_file ${RTCS_SOURCES})
@@ -54,11 +54,18 @@ function(FILE_TO_STRING)
           set(_output_file "${_output_path}/${_name_we}.${RTCS_EXTENSION}")
         endif()
 
+        if(RTCS_NO_INCLUDE)
+          set(_include_command "")
+        else()
+          set(_include_command
+            COMMAND ${CMAKE_COMMAND} -E echo "\\#include \\<${_path}/${_name_we}.hpp\\>" >>"${_output_file}")
+        endif()
+
         add_custom_command(
             OUTPUT ${_output_file}
             DEPENDS ${_input_file} ${BIN2CPP_PROGRAM}
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_output_path}"
-            COMMAND ${CMAKE_COMMAND} -E echo "\\#include \\<${_path}/${_name_we}.hpp\\>"  >>"${_output_file}"
+            ${_include_command}
             COMMAND ${BIN2CPP_PROGRAM} --file ${_name} --namespace ${_namespace} --output ${_output_file} --name ${var_name} ${_binary} ${_nullterm}
             WORKING_DIRECTORY "${_path}"
             COMMENT "Compiling ${_input_file} to C++ source"

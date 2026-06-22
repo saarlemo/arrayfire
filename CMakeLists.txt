@@ -94,6 +94,7 @@ option(AF_BUILD_CPU      "Build ArrayFire with a CPU backend"        ON)
 option(AF_BUILD_CUDA     "Build ArrayFire with a CUDA backend"       ${CUDA_FOUND})
 option(AF_BUILD_OPENCL   "Build ArrayFire with a OpenCL backend"     ${OpenCL_FOUND})
 option(AF_BUILD_ONEAPI   "Build ArrayFire with a oneAPI backend"     OFF)
+option(AF_BUILD_METAL    "Build ArrayFire with a Metal backend"      OFF)
 option(AF_BUILD_UNIFIED  "Build Backend-Independent ArrayFire API"   ON)
 option(AF_BUILD_DOCS     "Create ArrayFire Documentation"            ${DOXYGEN_FOUND})
 option(AF_BUILD_EXAMPLES "Build Examples"                            ON)
@@ -234,7 +235,7 @@ find_package(LAPACK)
 #
 # Note that the default value of AF_COMPUTE_LIBRARY is Intel-MKL.
 # Also, cmake doesn't have short-circuit of OR/AND conditions in if
-if(${AF_BUILD_CPU} OR ${AF_BUILD_OPENCL})
+if(${AF_BUILD_CPU} OR ${AF_BUILD_OPENCL} OR ${AF_BUILD_METAL})
   if("${AF_COMPUTE_LIBRARY}" STREQUAL "Intel-MKL"
       OR "${AF_COMPUTE_LIBRARY}" STREQUAL "MKL")
     af_mkl_batch_check()
@@ -386,6 +387,7 @@ conditional_directory(AF_BUILD_CPU     src/backend/cpu)
 conditional_directory(AF_BUILD_CUDA    src/backend/cuda)
 conditional_directory(AF_BUILD_ONEAPI  src/backend/oneapi)
 conditional_directory(AF_BUILD_OPENCL  src/backend/opencl)
+conditional_directory(AF_BUILD_METAL   src/backend/metal)
 conditional_directory(AF_BUILD_UNIFIED src/api/unified)
 
 if(TARGET af)
@@ -406,6 +408,10 @@ endif()
 
 if(TARGET afopencl)
   list(APPEND built_backends afopencl)
+endif()
+
+if(TARGET afmetal)
+  list(APPEND built_backends afmetal)
 endif()
 
 set_target_properties(${built_backends} PROPERTIES
@@ -496,7 +502,7 @@ install(DIRECTORY "${ArrayFire_SOURCE_DIR}/LICENSES/"
     DESTINATION LICENSES
     COMPONENT licenses)
 
-foreach(backend CPU CUDA OpenCL oneAPI Unified)
+foreach(backend CPU CUDA OpenCL oneAPI Metal Unified)
   string(TOUPPER ${backend} upper_backend)
   string(TOLOWER ${backend} lower_backend)
   if(AF_BUILD_${upper_backend})

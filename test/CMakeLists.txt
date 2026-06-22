@@ -125,6 +125,10 @@ if(AF_BUILD_UNIFIED)
   list(APPEND enabled_backends "unified")
 endif(AF_BUILD_UNIFIED)
 
+if(AF_BUILD_METAL)
+  list(APPEND enabled_backends "metal")
+endif(AF_BUILD_METAL)
+
 add_library(arrayfire_test STATIC
   testHelpers.hpp
   arrayfire_test.cpp)
@@ -509,6 +513,8 @@ elseif(AF_BUILD_CPU)
   target_link_libraries(print_info ArrayFire::afcpu)
 elseif(AF_BUILD_ONEAPI)
   target_link_libraries(print_info ArrayFire::afoneapi)
+elseif(AF_BUILD_METAL)
+  target_link_libraries(print_info ArrayFire::afmetal)
 endif()
 
 make_test(SRC jit_test_api.cpp)

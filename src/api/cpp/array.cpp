@@ -300,6 +300,16 @@ array::~array() {
                     release_func(get());
                     break;
                 }
+                case AF_BACKEND_METAL: {
+                    static auto *metal_handle =
+                        arrayfire::unified::getActiveHandle();
+                    static auto release_func =
+                        reinterpret_cast<af_release_array_ptr>(
+                            getFunctionPointer(metal_handle,
+                                               "af_release_array"));
+                    release_func(get());
+                    break;
+                }
                 case AF_BACKEND_DEFAULT:
                     assert(1 != 1 &&
                            "AF_BACKEND_DEFAULT cannot be set as a backend for "

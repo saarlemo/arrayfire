@@ -73,6 +73,9 @@ string getBkndLibName(const af_backend backend) {
         case AF_BACKEND_ONEAPI:
             ret = string(LIB_AF_BKND_PREFIX) + "afoneapi" + LIB_AF_BKND_SUFFIX;
             break;
+        case AF_BACKEND_METAL:
+            ret = string(LIB_AF_BKND_PREFIX) + "afmetal" + LIB_AF_BKND_SUFFIX;
+            break;
         default: assert(1 != 1 && "Invalid backend");
     }
     return ret;
@@ -84,6 +87,7 @@ string getBackendDirectoryName(const af_backend backend) {
         case AF_BACKEND_OPENCL: ret = "opencl"; break;
         case AF_BACKEND_CPU: ret = "cpu"; break;
         case AF_BACKEND_ONEAPI: ret = "oneapi"; break;
+        case AF_BACKEND_METAL: ret = "metal"; break;
         default: assert(1 != 1 && "Invalid backend");
     }
     return ret;
@@ -190,9 +194,10 @@ AFSymbolManager::AFSymbolManager()
     , numBackends(0)
     , backendsAvailable(0)
     , logger(loggerFactory("unified")) {
-    // In order of priority.
+    // In order of priority. Prefer native Metal over OpenCL on Apple systems.
     static const af_backend order[] = {AF_BACKEND_CUDA, AF_BACKEND_ONEAPI,
-                                       AF_BACKEND_OPENCL, AF_BACKEND_CPU};
+                                       AF_BACKEND_METAL, AF_BACKEND_OPENCL,
+                                       AF_BACKEND_CPU};
     LibHandle handle                = nullptr;
     af::Backend backend             = AF_BACKEND_DEFAULT;
     // Decremeting loop. The last successful backend loaded will be the most
