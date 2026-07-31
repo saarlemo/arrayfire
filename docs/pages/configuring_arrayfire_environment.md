@@ -51,6 +51,20 @@ AF_ONEAPI_DEFAULT_DEVICE=1 ./myprogram_oneapi
 Note: af::setDevice call in the source code will take precedence over this
 variable.
 
+AF_METAL_DEFAULT_DEVICE {#af_metal_default_device}
+-------------------------------------------------------------------------------
+
+Use this variable to set the default Metal device. Valid values for this
+variable are the device identifiers shown when af::info is run. If the
+requested device is unavailable, device 0 is used.
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+AF_METAL_DEFAULT_DEVICE=0 ./myprogram_metal
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Note: af::setDevice call in the source code will take precedence over this
+variable.
+
 AF_OPENCL_DEFAULT_DEVICE {#af_opencl_default_device}
 -------------------------------------------------------------------------------
 
@@ -228,6 +242,12 @@ When set, this environment variable specifies the maximum length of the CPU JIT
 tree after which evaluation is forced.
 
 The default value, as of v3.4, 100. This value was 20 for older versions.
+
+AF_METAL_MAX_JIT_LEN {#af_metal_max_jit_len}
+-------------------------------------------------------------------------------
+
+When set, this environment variable specifies the maximum length of the Metal
+JIT tree after which evaluation is forced. The default value is 100.
 
 AF_BUILD_LIB_CUSTOM_PATH {#af_build_lib_custom_path}
 -------------------------------------------------------------------------------

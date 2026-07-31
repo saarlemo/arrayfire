@@ -107,15 +107,6 @@ int main()
         fprintf(stderr, "%s\n", e.what());
     }
 
-    try {
-        printf("Trying Metal Backend\n");
-        af::setBackend(AF_BACKEND_METAL);
-        testBackend();
-    } catch (af::exception& e) {
-        printf("Caught exception when trying Metal backend\n");
-        fprintf(stderr, "%s\n", e.what());
-    }
-
     return 0;
 }
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -162,17 +153,6 @@ This output would be:
     -1- NVIDIA: NVIDIA RTX A5500, 22718 MB
     -2- Intel(R) FPGA Emulation Platform for OpenCL(TM): Intel(R) FPGA Emulation Device, 128650 MB
     -3- INTEL: AMD Ryzen Threadripper PRO 3955WX 16-Cores     , 128650 MB
-    af::randu(5, 4)
-    [5 4 1 1]
-        0.6010     0.5497     0.1583     0.3636
-        0.0278     0.2864     0.3712     0.4165
-        0.9806     0.3410     0.3543     0.5814
-        0.2126     0.7509     0.6450     0.8962
-        0.0655     0.4105     0.9675     0.3712
-
-    Trying Metal Backend
-    ArrayFire v3.10.0 (Metal, 64-bit Mac OSX)
-    [0] Apple: Apple M4, 12124 MB, Metal, unified memory
     af::randu(5, 4)
     [5 4 1 1]
         0.6010     0.5497     0.1583     0.3636
