@@ -355,6 +355,20 @@ make_test(SRC meanshift.cpp)
 make_test(SRC meanvar.cpp CXX11)
 make_test(SRC medfilt.cpp)
 make_test(SRC median.cpp)
+make_test(SRC metal_interop.cpp CXX11 BACKENDS "metal;unified")
+foreach(metal_interop_target
+        test_metal_interop_metal
+        test_metal_interop_unified)
+  if(TARGET ${metal_interop_target})
+    target_link_libraries(${metal_interop_target}
+      PRIVATE
+        ${AF_METAL_FRAMEWORK}
+        ${AF_FOUNDATION_FRAMEWORK})
+  endif()
+endforeach()
+if(AF_CACHE_KERNELS_TO_DISK)
+  make_test(SRC metal_kernel_cache.cpp CXX11 BACKENDS "metal")
+endif()
 make_test(SRC memory.cpp CXX11)
 make_test(SRC memory_lock.cpp)
 make_test(SRC missing.cpp)

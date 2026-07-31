@@ -32,6 +32,7 @@ target_sources(af
     jit_test_api.cpp
     lapack.cpp
     memory.cpp
+    metal.cpp
     ml.cpp
     moments.cpp
     random.cpp

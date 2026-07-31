@@ -357,6 +357,16 @@
         kernels and do custom memory operations using native CUDA commands. The functions
         contained in the \p afcu namespace provide methods to get the stream and native
         device id that ArrayFire is using.
+
+     @defgroup metal_mat Metal specific functions
+
+        \brief Accessing ArrayFire's Metal device, command queue, and buffers.
+
+        Applications using ArrayFire's Metal backend can encode custom Metal
+        compute work on ArrayFire's command queue. The functions in the
+        \p afmtl namespace expose the active device and queue, provide typed
+        buffer access, and submit custom command buffers through ArrayFire's
+        synchronization path.
    @}
 
    @defgroup ml Machine Learning
