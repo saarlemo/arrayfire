@@ -40,11 +40,11 @@ void copy_vector_field(const Array<T> &points, const Array<T> &directions,
     FG_CHECK(_.fg_get_vector_field_direction_buffer(&buff2, vfield));
 
     glBindBuffer(GL_ARRAY_BUFFER, buff1);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, size1, points.get());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, size1, points.getHostPtr());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     glBindBuffer(GL_ARRAY_BUFFER, buff2);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, size2, directions.get());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, size2, directions.getHostPtr());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     CheckGL("In CopyArrayToVBO");

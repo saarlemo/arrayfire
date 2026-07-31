@@ -12,7 +12,6 @@
 #include <Array.hpp>
 #include <err_metal.hpp>
 #include <math.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 
@@ -40,19 +39,12 @@ Array<T> range(const dim4& dims, const int seq_dim) {
     }
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalRange(type)) {
-        getQueue().enqueue(kernel::rangeMetal<T>, out,
-                           static_cast<unsigned>(_seq_dim));
-    } else {
-        // Apple GPUs do not expose FP64 in Metal. Keep the existing host path
-        // for double precision while supported scalar types use the GPU.
-        switch (_seq_dim) {
-            case 0: getQueue().enqueue(kernel::range<T, 0>, out); break;
-            case 1: getQueue().enqueue(kernel::range<T, 1>, out); break;
-            case 2: getQueue().enqueue(kernel::range<T, 2>, out); break;
-            case 3: getQueue().enqueue(kernel::range<T, 3>, out); break;
-        }
+    if (!kernel::supportsMetalRange(type)) {
+        AF_ERROR("Range type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::rangeMetal<T>, out,
+                             static_cast<unsigned>(_seq_dim));
 
     return out;
 }

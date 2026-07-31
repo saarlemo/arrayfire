@@ -9,16 +9,15 @@
 
 #include <fast.hpp>
 #include <kernel/fast.hpp>
-#include <metal_compute_fast.hpp>
 
 #include <Array.hpp>
+#include <common/err_common.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
 #include <cmath>
 
 #include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <type_traits>
 
@@ -57,12 +56,13 @@ unsigned fast(Array<float> &x_out, Array<float> &y_out, Array<float> &score_out,
     // Feature counter
     unsigned count = 0;
 
-    if constexpr (std::is_same<T, float>::value) {
-        kernel::fastLocateMetal(in, V, x, y, score, &count, thr, arc_length,
-                                nonmax, max_feat, edge);
+    if constexpr (std::is_same<T, double>::value) {
+        AF_ERROR("Double input is not supported by the Metal FAST kernel",
+                 AF_ERR_NOT_SUPPORTED);
     } else {
-        kernel::locate_features<T>(in, V, x, y, score, &count, thr, arc_length,
-                                   nonmax, max_feat, edge);
+        getQueue().enqueueNative(kernel::fastLocateMetal<T>, in, V, x, y, score,
+                                  &count, thr, arc_length, nonmax, max_feat,
+                                  edge);
     }
 
     // If more features than max_feat were detected, feat wasn't populated
@@ -81,8 +81,8 @@ unsigned fast(Array<float> &x_out, Array<float> &y_out, Array<float> &score_out,
         score_total = createEmptyArray<float>(feat_found_dims);
 
         count = 0;
-        kernel::non_maximal(V, x, y, x_total, y_total, score_total, &count,
-                            feat_found, edge);
+        kernel::fastNonMaxMetal(V, x, y, x_total, y_total, score_total, &count,
+                                feat_found, edge);
 
         feat_found = std::min(max_feat, count);
     } else {
@@ -98,13 +98,13 @@ unsigned fast(Array<float> &x_out, Array<float> &y_out, Array<float> &score_out,
         y_out     = createEmptyArray<float>(feat_found_dims);
         score_out = createEmptyArray<float>(feat_found_dims);
 
-        float *x_total_ptr     = x_total.get();
-        float *y_total_ptr     = y_total.get();
-        float *score_total_ptr = score_total.get();
+        float *x_total_ptr     = x_total.getHostPtr();
+        float *y_total_ptr     = y_total.getHostPtr();
+        float *score_total_ptr = score_total.getHostPtr();
 
-        float *x_out_ptr     = x_out.get();
-        float *y_out_ptr     = y_out.get();
-        float *score_out_ptr = score_out.get();
+        float *x_out_ptr     = x_out.getHostPtr();
+        float *y_out_ptr     = y_out.getHostPtr();
+        float *score_out_ptr = score_out.getHostPtr();
 
         for (size_t i = 0; i < feat_found; i++) {
             x_out_ptr[i]     = x_total_ptr[i];

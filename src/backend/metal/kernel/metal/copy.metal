@@ -2,7 +2,9 @@
 using namespace metal;
 
 struct CopyParams {
-    ulong dims[4], outputStrides[4], inputStrides[4];
+    ulong dims[4];
+    long outputStrides[4], inputStrides[4];
+    long outputOffset, inputOffset;
 };
 
 #define DEFINE_COPY(NAME, TYPE)                                             \
@@ -15,10 +17,12 @@ kernel void NAME(const device TYPE* input [[buffer(0)]],                    \
     ulong q=gid; const ulong x=q%p.dims[0]; q/=p.dims[0];                  \
     const ulong y=q%p.dims[1]; q/=p.dims[1];                              \
     const ulong z=q%p.dims[2]; const ulong w=q/p.dims[2];                  \
-    const ulong oo=x*p.outputStrides[0]+y*p.outputStrides[1]+              \
-                   z*p.outputStrides[2]+w*p.outputStrides[3];              \
-    const ulong ii=x*p.inputStrides[0]+y*p.inputStrides[1]+                \
-                   z*p.inputStrides[2]+w*p.inputStrides[3];                \
+    const long oo=p.outputOffset+long(x)*p.outputStrides[0]+               \
+                  long(y)*p.outputStrides[1]+long(z)*p.outputStrides[2]+   \
+                  long(w)*p.outputStrides[3];                              \
+    const long ii=p.inputOffset+long(x)*p.inputStrides[0]+                 \
+                  long(y)*p.inputStrides[1]+long(z)*p.inputStrides[2]+     \
+                  long(w)*p.inputStrides[3];                               \
     output[oo]=input[ii];                                                   \
 }
 

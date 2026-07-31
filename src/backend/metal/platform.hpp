@@ -12,6 +12,12 @@
 #include <queue.hpp>
 #include <string>
 
+namespace MTL {
+class CommandQueue;
+class CommandBuffer;
+class Device;
+}  // namespace MTL
+
 namespace arrayfire {
 namespace common {
 class ForgeManager;
@@ -40,7 +46,7 @@ int getDeviceCount();
 
 void init();
 
-unsigned getActiveDeviceId();
+int getActiveDeviceId();
 
 size_t getDeviceMemorySize(int device);
 
@@ -48,7 +54,18 @@ size_t getHostMemorySize();
 
 int setDevice(int device);
 
-queue& getQueue(int device = 0);
+queue& getQueue(int device = -1);
+
+MTL::Device& getDevice(int device = -1);
+
+MTL::CommandQueue& getCommandQueue(int device = -1);
+
+/// Commit a native command buffer and retain it as the synchronization point for
+/// its Metal command queue.
+void submitCommandBuffer(MTL::CommandBuffer* commandBuffer, int device = -1);
+
+/// Wait for all native work submitted to the Metal command queue.
+void syncCommandQueue(int device = -1);
 
 /// Return a handle to the queue for the device.
 ///
@@ -66,7 +83,8 @@ void setMemoryManager(std::unique_ptr<MemoryManagerBase> mgr);
 
 void resetMemoryManager();
 
-// Pinned memory not supported
+MemoryManagerBase& pinnedMemoryManager();
+
 void setMemoryManagerPinned(std::unique_ptr<MemoryManagerBase> mgr);
 
 void resetMemoryManagerPinned();

@@ -8,119 +8,59 @@
  ********************************************************/
 
 #pragma once
-#include <Array.hpp>
-#include <common/Transform.hpp>
+
+#include <Param.hpp>
+#include <af/traits.hpp>
+
+#include <cstddef>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<typename Ti, typename To, typename Tw>
-struct MeanOp {
-    common::Transform<Ti, To, af_add_t> transform;
-    To runningMean;
-    Tw runningCount;
-    MeanOp(Ti mean, Tw count)
-        : transform(), runningMean(transform(mean)), runningCount(count) {}
+bool supportsMetalMean(af_dtype inputType, af_dtype outputType) noexcept;
+bool supportsMetalMeanWeighted(af_dtype valueType,
+                               af_dtype weightType) noexcept;
 
-    /// Prevents the optimzation of the mean calculation by some compiler flags
-    /// specifically -march=native.
-    [[gnu::optimize("01")]] void operator()(Ti _newMean, Tw newCount) {
-        To newMean = transform(_newMean);
-        if ((newCount != 0) || (runningCount != 0)) {
-            Tw runningScale = runningCount;
-            Tw newScale     = newCount;
-            runningCount += newCount;
-            runningScale = runningScale / runningCount;
-            newScale     = newScale / runningCount;
-            runningMean  = (runningScale * runningMean) + (newScale * newMean);
-        }
-    }
-};
+void launchMetalMean(BufferParam output, size_t outputBytes,
+                     const af::dim4& outputDims,
+                     const af::dim4& outputStrides, BufferParam input,
+                     size_t inputBytes, const af::dim4& inputDims,
+                     const af::dim4& inputStrides, int dimension,
+                     bool reduceAll, af_dtype inputType, af_dtype outputType);
 
-template<typename T, typename Tw, int D>
-struct mean_weighted_dim {
-    void operator()(Param<T> output, const dim_t outOffset,
-                    const CParam<T> input, const dim_t inOffset,
-                    const CParam<Tw> weight, const dim_t wtOffset,
-                    const int dim) {
-        const af::dim4 odims    = output.dims();
-        const af::dim4 ostrides = output.strides();
-        const af::dim4 istrides = input.strides();
-        const af::dim4 wstrides = weight.strides();
-        const int D1            = D - 1;
-        for (dim_t i = 0; i < odims[D1]; i++) {
-            mean_weighted_dim<T, Tw, D1>()(output, outOffset + i * ostrides[D1],
-                                           input, inOffset + i * istrides[D1],
-                                           weight, wtOffset + i * wstrides[D1],
-                                           dim);
-        }
-    }
-};
+void launchMetalMeanWeighted(
+    BufferParam output, size_t outputBytes, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam input, size_t inputBytes,
+    const af::dim4& inputDims, const af::dim4& inputStrides,
+    BufferParam weights, size_t weightBytes,
+    const af::dim4& weightStrides, int dimension, bool reduceAll,
+    af_dtype valueType, af_dtype weightType);
+
+template<typename Ti, typename To>
+void meanMetal(Param<To> output, CParam<Ti> input, const int dimension,
+               const bool reduceAll) {
+    launchMetalMean(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(To),
+        output.dims(), output.strides(), input.bufferParam(), sizeof(Ti),
+        input.dims(), input.strides(), dimension, reduceAll,
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type));
+}
 
 template<typename T, typename Tw>
-struct mean_weighted_dim<T, Tw, 0> {
-    void operator()(Param<T> output, const dim_t outOffset,
-                    const CParam<T> input, const dim_t inOffset,
-                    const CParam<Tw> weight, const dim_t wtOffset,
-                    const int dim) {
-        const af::dim4 idims    = input.dims();
-        const af::dim4 istrides = input.strides();
-        const af::dim4 wstrides = weight.strides();
-
-        T const* const in  = input.get();
-        Tw const* const wt = weight.get();
-        T* out             = output.get();
-
-        dim_t istride = istrides[dim];
-        dim_t wstride = wstrides[dim];
-        MeanOp<compute_t<T>, compute_t<T>, compute_t<Tw>> Op(0, 0);
-        for (dim_t i = 0; i < idims[dim]; i++) {
-            Op(compute_t<T>(in[inOffset + i * istride]),
-               compute_t<Tw>(wt[wtOffset + i * wstride]));
-        }
-
-        out[outOffset] = Op.runningMean;
-    }
-};
-
-template<typename Ti, typename Tw, typename To, int D>
-struct mean_dim {
-    void operator()(Param<To> output, const dim_t outOffset,
-                    const CParam<Ti> input, const dim_t inOffset,
-                    const int dim) {
-        const af::dim4 odims    = output.dims();
-        const af::dim4 ostrides = output.strides();
-        const af::dim4 istrides = input.strides();
-        const int D1            = D - 1;
-        for (dim_t i = 0; i < odims[D1]; i++) {
-            mean_dim<Ti, Tw, To, D1>()(output, outOffset + i * ostrides[D1],
-                                       input, inOffset + i * istrides[D1], dim);
-        }
-    }
-};
-
-template<typename Ti, typename Tw, typename To>
-struct mean_dim<Ti, Tw, To, 0> {
-    void operator()(Param<To> output, const dim_t outOffset,
-                    const CParam<Ti> input, const dim_t inOffset,
-                    const int dim) {
-        const af::dim4 idims    = input.dims();
-        const af::dim4 istrides = input.strides();
-
-        Ti const* const in = input.get();
-        To* out            = output.get();
-
-        dim_t istride = istrides[dim];
-        dim_t end     = inOffset + idims[dim] * istride;
-        MeanOp<compute_t<Ti>, compute_t<To>, compute_t<Tw>> Op(0, 0);
-        for (dim_t i = inOffset; i < end; i += istride) {
-            Op(compute_t<Ti>(in[i]), 1);
-        }
-
-        out[outOffset] = Op.runningMean;
-    }
-};
+void meanWeightedMetal(Param<T> output, CParam<T> input, CParam<Tw> weights,
+                       const int dimension, const bool reduceAll) {
+    launchMetalMeanWeighted(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T),
+        output.dims(), output.strides(), input.bufferParam(), sizeof(T),
+        input.dims(), input.strides(), weights.bufferParam(), sizeof(Tw),
+        weights.strides(), dimension, reduceAll,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<Tw>::af_type));
+}
 
 }  // namespace kernel
 }  // namespace metal

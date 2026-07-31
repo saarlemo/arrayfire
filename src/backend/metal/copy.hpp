@@ -9,10 +9,17 @@
 #pragma once
 
 #include <Array.hpp>
+#include <cstddef>
+#include <err_metal.hpp>
+#include <kernel/copy.hpp>
 #include <kernel/pad_array_borders.hpp>
 #include <math.hpp>
-#include <metal_compute.hpp>
+#include <platform.hpp>
 #include <queue.hpp>
+
+namespace MTL {
+class Buffer;
+}  // namespace MTL
 
 namespace af {
 class dim4;
@@ -20,6 +27,9 @@ class dim4;
 
 namespace arrayfire {
 namespace metal {
+
+bool copyBuffer(MTL::Buffer* destination, size_t destinationOffset,
+                MTL::Buffer* source, size_t sourceOffset, size_t bytes);
 
 template<typename T>
 void copyData(T *to, const Array<T> &from);
@@ -65,13 +75,12 @@ Array<T> padArrayBorders(const Array<T> &in, const dim4 &lowerBoundPadding,
                                      : createEmptyArray<T>(oDims));
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalPadBorders(type)) {
-        getQueue().enqueue(kernel::padBordersMetal<T>, ret, in,
-                           lowerBoundPadding, upperBoundPadding, btype);
-    } else {
-        getQueue().enqueue(kernel::padBorders<T>, ret, in, lowerBoundPadding,
-                           upperBoundPadding, btype);
+    if (!kernel::supportsMetalPadBorders(type)) {
+        AF_ERROR("Border-padding type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::padBordersMetal<T>, ret, in,
+                             lowerBoundPadding, upperBoundPadding, btype);
     return ret;
 }
 

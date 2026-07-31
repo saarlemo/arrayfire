@@ -10,7 +10,6 @@
 #include <Array.hpp>
 #include <err_metal.hpp>
 #include <kernel/moments.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/defines.h>
@@ -38,11 +37,11 @@ Array<float> moments(const Array<T> &in, const af_moment_type moment) {
 
     Array<float> out    = createValueArray<float>(odims, 0.f);
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalMoments(type)) {
-        getQueue().enqueue(kernel::momentsMetal<T>, out, in, moment);
-    } else {
-        getQueue().enqueue(kernel::moments<T>, out, in, moment);
+    if (!kernel::supportsMetalMoments(type)) {
+        AF_ERROR("Moments type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::momentsMetal<T>, out, in, moment);
     getQueue().sync();
     return out;
 }

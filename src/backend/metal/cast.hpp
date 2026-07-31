@@ -1,5 +1,5 @@
 /*******************************************************
- * Copyright (c) 2014, ArrayFire
+ * Copyright (c) 2026, ArrayFire
  * All rights reserved.
  *
  * This file is distributed under 3-clause BSD license.
@@ -8,151 +8,45 @@
  ********************************************************/
 
 #pragma once
+
 #include <Array.hpp>
+#include <common/half.hpp>
+#include <common/jit/UnaryNode.hpp>
 #include <err_metal.hpp>
-#include <jit/UnaryNode.hpp>
 #include <math.hpp>
 #include <optypes.hpp>
+#include <traits.hpp>
 #include <types.hpp>
 #include <af/dim4.hpp>
-#include <complex>
 
 namespace arrayfire {
 namespace metal {
 
 template<typename To, typename Ti>
-struct UnOp<To, Ti, af_cast_t> {
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(in[i]); }
-    }
-};
+struct CastOp;
 
-/// NOTE(umar): The next specializations have multiple eval functions because
-/// the f16 data type needs to be converted to and from the compute type.
-/// Here, we have specializations for real numbers as well as the complex
-/// numbers
-/// TODO(umar): make a macro to reduce repeat code
-
-template<typename To>
-struct UnOp<To, arrayfire::common::half, af_cast_t> {
-    typedef arrayfire::common::half Ti;
-
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) {
-            float val = static_cast<float>(in[i]);
-            out[i]    = To(val);
-        }
-    }
-
-    void eval(jit::array<To> &out, const jit::array<float> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(in[i]); }
-    }
-};
-
-template<typename Ti>
-struct UnOp<arrayfire::common::half, Ti, af_cast_t> {
-    typedef arrayfire::common::half To;
-
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) {
-            float val = static_cast<float>(in[i]);
-            out[i]    = To(val);
-        }
-    }
-
-    void eval(jit::array<float> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = float(in[i]); }
-    }
-};
-
-template<>
-struct UnOp<arrayfire::common::half, std::complex<float>, af_cast_t> {
-    typedef arrayfire::common::half To;
-    typedef std::complex<float> Ti;
-
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) {
-            float val = std::abs(in[i]);
-            out[i]    = To(val);
-        }
-    }
-
-    void eval(jit::array<float> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = std::abs(in[i]); }
-    }
-};
-
-template<>
-struct UnOp<arrayfire::common::half, std::complex<double>, af_cast_t> {
-    typedef arrayfire::common::half To;
-    typedef std::complex<double> Ti;
-
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) {
-            float val = std::abs(in[i]);
-            out[i]    = To(val);
-        }
-    }
-
-    void eval(jit::array<float> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = std::abs(in[i]); }
-    }
-};
-
-template<typename To>
-struct UnOp<To, std::complex<float>, af_cast_t> {
-    typedef std::complex<float> Ti;
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(std::abs(in[i])); }
-    }
-};
-
-template<typename To>
-struct UnOp<To, std::complex<double>, af_cast_t> {
-    typedef std::complex<double> Ti;
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(std::abs(in[i])); }
-    }
-};
-
-// DO NOT REMOVE THE TWO SPECIALIZATIONS BELOW
-// These specializations are required because we partially specialize when
-// Ti = std::complex<T> The partial specializations above expect output to
-// be real. so they To(std::abs(v)) instead of To(v) which results in
-// incorrect values when To is complex.
-
-template<>
-struct UnOp<std::complex<float>, std::complex<double>, af_cast_t> {
-    typedef std::complex<double> Ti;
-    typedef std::complex<float> To;
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(in[i]); }
-    }
-};
-
-template<>
-struct UnOp<std::complex<double>, std::complex<float>, af_cast_t> {
-    typedef std::complex<float> Ti;
-    typedef std::complex<double> To;
-    void eval(jit::array<To> &out, const jit::array<Ti> &in, int lim) {
-        for (int i = 0; i < lim; i++) { out[i] = To(in[i]); }
-    }
-};
-
-#define CAST_B8(T)                                                           \
-    template<>                                                               \
-    struct UnOp<char, T, af_cast_t> {                                        \
-        void eval(jit::array<char> &out, const jit::array<T> &in, int lim) { \
-            for (int i = 0; i < lim; i++) { out[i] = char(in[i] != 0); }     \
-        }                                                                    \
+#define METAL_CAST_OP(TYPE, NAME)          \
+    template<typename Ti>                  \
+    struct CastOp<TYPE, Ti> {              \
+        const char *name() { return NAME; } \
     };
 
-CAST_B8(float)
-CAST_B8(double)
-CAST_B8(int)
-CAST_B8(schar)
-CAST_B8(uchar)
-CAST_B8(char)
+METAL_CAST_OP(float, "af_jit_cast_float")
+METAL_CAST_OP(double, "af_jit_cast_double")
+METAL_CAST_OP(int, "af_jit_cast_int")
+METAL_CAST_OP(uint, "af_jit_cast_uint")
+METAL_CAST_OP(schar, "af_jit_cast_char")
+METAL_CAST_OP(uchar, "af_jit_cast_uchar")
+METAL_CAST_OP(short, "af_jit_cast_short")
+METAL_CAST_OP(ushort, "af_jit_cast_ushort")
+METAL_CAST_OP(intl, "af_jit_cast_long")
+METAL_CAST_OP(uintl, "af_jit_cast_ulong")
+METAL_CAST_OP(common::half, "af_jit_cast_half")
+METAL_CAST_OP(cfloat, "af_jit_cast_cfloat")
+METAL_CAST_OP(cdouble, "af_jit_cast_cdouble")
+METAL_CAST_OP(char, "af_jit_cast_bool")
+
+#undef METAL_CAST_OP
 
 }  // namespace metal
 }  // namespace arrayfire

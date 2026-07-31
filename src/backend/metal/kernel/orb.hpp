@@ -8,9 +8,6 @@
  ********************************************************/
 
 #pragma once
-#include <Param.hpp>
-#include <utility.hpp>
-
 namespace arrayfire {
 namespace metal {
 namespace kernel {
@@ -97,189 +94,25 @@ const int ref_pat[REF_PAT_LENGTH] = {
     -1,  -6,  0,   -11,
 };
 
-template<typename T>
-void keep_features(float* x_out, float* y_out, float* score_out,
-                   float* size_out, const float* x_in, const float* y_in,
-                   const float* score_in, const unsigned* score_idx,
-                   const float* size_in, const unsigned n_feat) {
-    // Keep only the first n_feat features
-    for (unsigned f = 0; f < n_feat; f++) {
-        x_out[f]     = x_in[score_idx[f]];
-        y_out[f]     = y_in[score_idx[f]];
-        score_out[f] = score_in[f];
-        if (size_in != nullptr && size_out != nullptr)
-            size_out[f] = size_in[score_idx[f]];
-    }
-}
+void orbCentroidMetal(BufferParam x, BufferParam y, BufferParam orientation,
+                      unsigned features, CParam<float> image,
+                      unsigned patchSize);
 
-template<typename T, bool use_scl>
-void harris_response(float* x_out, float* y_out, float* score_out,
-                     float* size_out, const float* x_in, const float* y_in,
-                     const float* scl_in, const unsigned total_feat,
-                     unsigned* usable_feat, CParam<T> image,
-                     const unsigned block_size, const float k_thr,
-                     const unsigned patch_size) {
-    const af::dim4 idims = image.dims();
-    const T* image_ptr   = image.get();
-    for (unsigned f = 0; f < total_feat; f++) {
-        unsigned x, y;
-        float scl = 1.f;
-        if (use_scl) {
-            // Update x and y coordinates according to scale
-            scl = scl_in[f];
-            x   = (unsigned)round(x_in[f] * scl);
-            y   = (unsigned)round(y_in[f] * scl);
-        } else {
-            x = (unsigned)round(x_in[f]);
-            y = (unsigned)round(y_in[f]);
-        }
+void orbHarrisMetal(BufferParam xOutput, BufferParam yOutput,
+                    BufferParam scoreOutput, BufferParam xInput,
+                    BufferParam yInput, unsigned features, unsigned* count,
+                    CParam<float> image, unsigned blockSize, float kThreshold,
+                    unsigned patchSize);
 
-        // Round feature size to nearest odd integer
-        float size = 2.f * floor((patch_size * scl) / 2.f) + 1.f;
+void orbExtractMetal(BufferParam descriptor, BufferParam x, BufferParam y,
+                     BufferParam orientation, BufferParam size, BufferParam pattern,
+                     unsigned features, CParam<float> image, float scale,
+                     unsigned patchSize);
 
-        // Avoid keeping features that might be too wide and might not fit on
-        // the image, sqrt(2.f) is the radius when angle is 45 degrees and
-        // represents widest case possible
-        unsigned patch_r = ceil(size * sqrt(2.f) / 2.f);
-        if (x < patch_r || y < patch_r || x >= idims[1] - patch_r ||
-            y >= idims[0] - patch_r)
-            continue;
-
-        unsigned r = block_size / 2;
-
-        float ixx = 0.f, iyy = 0.f, ixy = 0.f;
-        unsigned block_size_sq = block_size * block_size;
-        for (unsigned k = 0; k < block_size_sq; k++) {
-            int i = k / block_size - r;
-            int j = k % block_size - r;
-
-            // Calculate local x and y derivatives
-            float ix = image_ptr[(x + i + 1) * idims[0] + y + j] -
-                       image_ptr[(x + i - 1) * idims[0] + y + j];
-            float iy = image_ptr[(x + i) * idims[0] + y + j + 1] -
-                       image_ptr[(x + i) * idims[0] + y + j - 1];
-
-            // Accumulate second order derivatives
-            ixx += ix * ix;
-            iyy += iy * iy;
-            ixy += ix * iy;
-        }
-
-        unsigned idx = *usable_feat;
-        *usable_feat += 1;
-        float tr  = ixx + iyy;
-        float det = ixx * iyy - ixy * ixy;
-
-        // Calculate Harris responses
-        float resp = det - k_thr * (tr * tr);
-
-        // Scale factor
-        // TODO: improve response scaling
-        float rscale = 0.001f;
-        rscale       = rscale * rscale * rscale * rscale;
-
-        x_out[idx]     = x;
-        y_out[idx]     = y;
-        score_out[idx] = resp * rscale;
-        if (use_scl) size_out[idx] = size;
-    }
-}
-
-template<typename T>
-void centroid_angle(const float* x_in, const float* y_in,
-                    float* orientation_out, const unsigned total_feat,
-                    CParam<T> image, const unsigned patch_size) {
-    const af::dim4 idims = image.dims();
-    const T* image_ptr   = image.get();
-    for (unsigned f = 0; f < total_feat; f++) {
-        unsigned x = (unsigned)round(x_in[f]);
-        unsigned y = (unsigned)round(y_in[f]);
-
-        unsigned r = patch_size / 2;
-        if (x < r || y < r || x > idims[1] - r || y > idims[0] - r) continue;
-
-        T m01 = (T)0, m10 = (T)0;
-        unsigned patch_size_sq = patch_size * patch_size;
-        for (unsigned k = 0; k < patch_size_sq; k++) {
-            int i = k / patch_size - r;
-            int j = k % patch_size - r;
-
-            // Calculate first order moments
-            T p = image_ptr[(x + i) * idims[0] + y + j];
-            m01 += j * p;
-            m10 += i * p;
-        }
-
-        float angle        = atan2(m01, m10);
-        orientation_out[f] = angle;
-    }
-}
-
-template<typename T>
-inline T get_pixel(unsigned x, unsigned y, const float ori, const unsigned size,
-                   const int dist_x, const int dist_y, CParam<T> image,
-                   const unsigned patch_size) {
-    const af::dim4 idims = image.dims();
-    const T* image_ptr   = image.get();
-    float ori_sin        = sin(ori);
-    float ori_cos        = cos(ori);
-    float patch_scl      = (float)size / (float)patch_size;
-
-    // Calculate point coordinates based on orientation and size
-    x += round(dist_x * patch_scl * ori_cos - dist_y * patch_scl * ori_sin);
-    y += round(dist_x * patch_scl * ori_sin + dist_y * patch_scl * ori_cos);
-
-    return image_ptr[x * idims[0] + y];
-}
-
-template<typename T>
-void extract_orb(unsigned* desc_out, const unsigned n_feat, float* x_in_out,
-                 float* y_in_out, const float* ori_in, float* size_out,
-                 CParam<T> image, const float scl, const unsigned patch_size) {
-    const af::dim4 idims = image.dims();
-    for (unsigned f = 0; f < n_feat; f++) {
-        unsigned x    = (unsigned)round(x_in_out[f]);
-        unsigned y    = (unsigned)round(y_in_out[f]);
-        float ori     = ori_in[f];
-        unsigned size = patch_size;
-
-        unsigned r = ceil(patch_size * sqrt(2.f) / 2.f);
-        if (x < r || y < r || x >= idims[1] - r || y >= idims[0] - r) continue;
-
-        // Descriptor fixed at 256 bits for now
-        // Storing descriptor as a vector of 8 x 32-bit unsigned numbers
-        for (unsigned i = 0; i < 8; i++) {
-            unsigned v = 0;
-
-            // j < 32 for 256 bits descriptor
-            for (unsigned j = 0; j < 32; j++) {
-                // Get position from distribution pattern and values of points
-                // p1 and p2
-                int dist_x = ref_pat[i * 32 * 4 + j * 4];
-                int dist_y = ref_pat[i * 32 * 4 + j * 4 + 1];
-                T p1       = get_pixel(x, y, ori, size, dist_x, dist_y, image,
-                                       patch_size);
-
-                dist_x = ref_pat[i * 32 * 4 + j * 4 + 2];
-                dist_y = ref_pat[i * 32 * 4 + j * 4 + 3];
-                T p2   = get_pixel(x, y, ori, size, dist_x, dist_y, image,
-                                   patch_size);
-
-                // Calculate bit based on p1 and p2 and shifts it to correct
-                // position
-                v |= (p1 < p2) << j;
-            }
-
-            // Store 32 bits of descriptor
-            desc_out[f * 8 + i] += v;
-        }
-
-        x_in_out[f] = round(x * scl);
-        y_in_out[f] = round(y * scl);
-        size_out[f] = patch_size * scl;
-    }
-}
-
+void orbKeepMetal(BufferParam xOutput, BufferParam yOutput,
+                  BufferParam scoreOutput, BufferParam xInput,
+                  BufferParam yInput, BufferParam scoreInput,
+                  BufferParam scoreIndex, unsigned features);
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

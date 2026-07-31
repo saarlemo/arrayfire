@@ -8,196 +8,97 @@
  ********************************************************/
 
 #pragma once
+
 #include <Param.hpp>
-#include <common/Binary.hpp>
-#include <common/Transform.hpp>
-#include <common/half.hpp>
+#include <af/traits.hpp>
+
+#include <cstddef>
+#include <cstdint>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<af_op_t op, typename Ti, typename To, int D>
-struct reduce_dim {
-    void operator()(Param<To> out, const dim_t outOffset, CParam<Ti> in,
-                    const dim_t inOffset, const int dim, bool change_nan,
-                    double nanval) {
-        static const int D1 = D - 1;
-        reduce_dim<op, Ti, To, D1> reduce_dim_next;
+bool supportsMetalReduce(af_dtype inputType, af_dtype outputType) noexcept;
+bool supportsMetalReduceByKey(af_dtype keyType, af_dtype inputType,
+                              af_dtype outputType) noexcept;
+void launchMetalReduce(
+    BufferParam output, size_t outputBytes, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam input, size_t inputBytes,
+    const af::dim4& inputDims, const af::dim4& inputStrides, int dimension,
+    uint32_t operation, bool reduceAll, bool changeNan, double nanValue,
+    af_dtype inputType, af_dtype outputType);
+void launchMetalReduceByKeyCompact(
+    BufferParam outputKeys, size_t outputBytes, BufferParam count,
+    BufferParam inputKeys, size_t inputBytes, const af::dim4& keyDims,
+    const af::dim4& keyStrides, af_dtype keyType);
+void launchMetalReduceByKey(
+    BufferParam output, size_t outputBytes, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam keys, size_t keyBytes,
+    const af::dim4& keyStrides, BufferParam input, size_t inputBytes,
+    const af::dim4& inputDims, const af::dim4& inputStrides, int dimension,
+    uint32_t operation, int nReduced, bool changeNan, double nanValue,
+    af_dtype keyType, af_dtype inputType, af_dtype outputType);
 
-        const af::dim4 ostrides = out.strides();
-        const af::dim4 istrides = in.strides();
-        const af::dim4 odims    = out.dims();
-
-        for (dim_t i = 0; i < odims[D1]; i++) {
-            reduce_dim_next(out, outOffset + i * ostrides[D1], in,
-                            inOffset + i * istrides[D1], dim, change_nan,
-                            nanval);
-        }
+template<af_op_t op>
+constexpr uint32_t reduceOperation() noexcept {
+    if constexpr (op == af_add_t) {
+        return 0;
+    } else if constexpr (op == af_mul_t) {
+        return 1;
+    } else if constexpr (op == af_min_t) {
+        return 2;
+    } else if constexpr (op == af_max_t) {
+        return 3;
+    } else if constexpr (op == af_notzero_t) {
+        return 4;
+    } else if constexpr (op == af_or_t) {
+        return 5;
+    } else {
+        static_assert(op == af_and_t, "Unsupported Metal reduction operation");
+        return 6;
     }
-};
-
-template<af_op_t op, typename Ti, typename To>
-struct reduce_dim<op, Ti, To, 0> {
-    common::Transform<data_t<Ti>, compute_t<To>, op> transform;
-    common::Binary<compute_t<To>, op> reduce;
-    void operator()(Param<To> out, const dim_t outOffset, CParam<Ti> in,
-                    const dim_t inOffset, const int dim, bool change_nan,
-                    double nanval) {
-        const af::dim4 istrides = in.strides();
-        const af::dim4 idims    = in.dims();
-
-        data_t<To> *const outPtr      = out.get() + outOffset;
-        data_t<Ti> const *const inPtr = in.get() + inOffset;
-        dim_t stride                  = istrides[dim];
-
-        compute_t<To> out_val = common::Binary<compute_t<To>, op>::init();
-        for (dim_t i = 0; i < idims[dim]; i++) {
-            compute_t<To> in_val = transform(inPtr[i * stride]);
-            if (change_nan) in_val = IS_NAN(in_val) ? nanval : in_val;
-            out_val = reduce(in_val, out_val);
-        }
-
-        *outPtr = data_t<To>(out_val);
-    }
-};
-
-template<typename Tk>
-void n_reduced_keys(Param<Tk> okeys, int *n_reduced, CParam<Tk> keys) {
-    const af::dim4 kdims = keys.dims();
-
-    Tk *const outKeysPtr      = okeys.get();
-    Tk const *const inKeysPtr = keys.get();
-
-    int nkeys      = 0;
-    Tk current_key = inKeysPtr[0];
-    for (dim_t i = 0; i < kdims[0]; i++) {
-        Tk keyval = inKeysPtr[i];
-
-        if (keyval != current_key) {
-            outKeysPtr[nkeys] = current_key;
-            current_key       = keyval;
-            ++nkeys;
-        }
-
-        if (i == (kdims[0] - 1)) { outKeysPtr[nkeys] = current_key; }
-    }
-
-    *n_reduced = nkeys + 1;
 }
 
-template<af_op_t op, typename Ti, typename Tk, typename To, int D>
-struct reduce_dim_by_key {
-    void operator()(Param<To> ovals, const dim_t ovOffset, CParam<Tk> keys,
-                    CParam<Ti> vals, const dim_t vOffset, int *n_reduced,
-                    const int dim, bool change_nan, double nanval) {
-        static const int D1 = D - 1;
-        reduce_dim_by_key<op, Ti, Tk, To, D1> reduce_by_key_dim_next;
+template<af_op_t op, typename Ti, typename To>
+void reduceMetal(Param<To> output, CParam<Ti> input, const int dimension,
+                 const bool reduceAll, const bool changeNan,
+                 const double nanValue) {
+    launchMetalReduce(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(To),
+        output.dims(), output.strides(), input.bufferParam(), sizeof(Ti),
+        input.dims(), input.strides(), dimension, reduceOperation<op>(),
+        reduceAll, changeNan, nanValue,
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type));
+}
 
-        const af::dim4 ovstrides = ovals.strides();
-        const af::dim4 vstrides  = vals.strides();
-        const af::dim4 vdims     = ovals.dims();
-
-        if (D1 == dim) {
-            reduce_by_key_dim_next(ovals, ovOffset, keys, vals, vOffset,
-                                   n_reduced, dim, change_nan, nanval);
-        } else {
-            for (dim_t i = 0; i < vdims[D1]; i++) {
-                reduce_by_key_dim_next(ovals, ovOffset + (i * ovstrides[D1]),
-                                       keys, vals, vOffset + (i * vstrides[D1]),
-                                       n_reduced, dim, change_nan, nanval);
-            }
-        }
-    }
-};
+template<typename Tk>
+void reduceByKeyCompactMetal(Param<Tk> outputKeys, Param<int> count,
+                             CParam<Tk> inputKeys) {
+    launchMetalReduceByKeyCompact(
+        outputKeys.bufferParam(),
+        static_cast<size_t>(outputKeys.dims().elements()) * sizeof(Tk),
+        count.bufferParam(), inputKeys.bufferParam(), sizeof(Tk),
+        inputKeys.dims(), inputKeys.strides(),
+        static_cast<af_dtype>(af::dtype_traits<Tk>::af_type));
+}
 
 template<af_op_t op, typename Ti, typename Tk, typename To>
-struct reduce_dim_by_key<op, Ti, Tk, To, 0> {
-    common::Transform<data_t<Ti>, compute_t<To>, op> transform;
-    common::Binary<compute_t<To>, op> reduce;
-    void operator()(Param<To> ovals, const dim_t ovOffset, CParam<Tk> keys,
-                    CParam<Ti> vals, const dim_t vOffset, int *n_reduced,
-                    const int dim, bool change_nan, double nanval) {
-        const af::dim4 vstrides = vals.strides();
-        const af::dim4 vdims    = vals.dims();
-
-        const af::dim4 ovstrides = ovals.strides();
-
-        data_t<Tk> const *const inKeysPtr = keys.get();
-        data_t<Ti> const *const inValsPtr = vals.get();
-        data_t<To> *const outValsPtr      = ovals.get();
-
-        int keyidx                = 0;
-        compute_t<Tk> current_key = compute_t<Tk>(inKeysPtr[0]);
-        compute_t<To> out_val     = reduce.init();
-
-        dim_t istride = vstrides[dim];
-        dim_t ostride = ovstrides[dim];
-
-        for (dim_t i = 0; i < vdims[dim]; i++) {
-            compute_t<Tk> keyval = inKeysPtr[i];
-
-            if (keyval == current_key) {
-                compute_t<To> in_val =
-                    transform(inValsPtr[vOffset + (i * istride)]);
-                if (change_nan) in_val = IS_NAN(in_val) ? nanval : in_val;
-                out_val = reduce(in_val, out_val);
-
-            } else {
-                outValsPtr[ovOffset + (keyidx * ostride)] = out_val;
-
-                current_key = keyval;
-                out_val     = transform(inValsPtr[vOffset + (i * istride)]);
-                if (change_nan) out_val = IS_NAN(out_val) ? nanval : out_val;
-                ++keyidx;
-            }
-
-            if (i == (vdims[dim] - 1)) {
-                outValsPtr[ovOffset + (keyidx * ostride)] = out_val;
-            }
-        }
-    }
-};
-
-template<af_op_t op, typename Ti, typename To>
-struct reduce_all {
-    common::Transform<data_t<Ti>, compute_t<To>, op> transform;
-    common::Binary<compute_t<To>, op> reduce;
-    void operator()(Param<To> out, CParam<Ti> in, bool change_nan,
-                    double nanval) {
-        // Decrement dimension of select dimension
-        af::dim4 dims            = in.dims();
-        af::dim4 strides         = in.strides();
-        const data_t<Ti> *inPtr  = in.get();
-        data_t<To> *const outPtr = out.get();
-
-        compute_t<To> out_val = common::Binary<compute_t<To>, op>::init();
-
-        for (dim_t l = 0; l < dims[3]; l++) {
-            dim_t off3 = l * strides[3];
-
-            for (dim_t k = 0; k < dims[2]; k++) {
-                dim_t off2 = k * strides[2];
-
-                for (dim_t j = 0; j < dims[1]; j++) {
-                    dim_t off1 = j * strides[1];
-
-                    for (dim_t i = 0; i < dims[0]; i++) {
-                        dim_t idx = i + off1 + off2 + off3;
-
-                        compute_t<To> in_val = transform(inPtr[idx]);
-                        if (change_nan) {
-                            in_val = IS_NAN(in_val) ? nanval : in_val;
-                        }
-                        out_val = reduce(in_val, out_val);
-                    }
-                }
-            }
-        }
-
-        *outPtr = data_t<To>(out_val);
-    }
-};
+void reduceByKeyMetal(Param<To> output, CParam<Tk> keys, CParam<Ti> input,
+                      const int dimension, const int nReduced,
+                      const bool changeNan, const double nanValue) {
+    launchMetalReduceByKey(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(To),
+        output.dims(), output.strides(), keys.bufferParam(), sizeof(Tk),
+        keys.strides(), input.bufferParam(), sizeof(Ti), input.dims(),
+        input.strides(), dimension, reduceOperation<op>(), nReduced, changeNan,
+        nanValue, static_cast<af_dtype>(af::dtype_traits<Tk>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type));
+}
 
 }  // namespace kernel
 }  // namespace metal

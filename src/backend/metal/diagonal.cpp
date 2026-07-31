@@ -9,10 +9,10 @@
 
 #include <diagonal.hpp>
 #include <kernel/diagonal.hpp>
-#include <metal_compute.hpp>
 
 #include <Array.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <af/defines.h>
 #include <af/dim4.hpp>
@@ -35,12 +35,11 @@ Array<T> diagCreate(const Array<T> &in, const int num) {
     Array<T> out = createEmptyArray<T>(dim4(size, size, batch));
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalDiagonal(type)) {
-        getQueue().enqueue(kernel::diagCreateMetal<T>, out, in, num);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::diagCreate<T>, out, in, num);
+    if (!kernel::supportsMetalDiagonal(type)) {
+        AF_ERROR("Diagonal type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::diagCreateMetal<T>, out, in, num);
 
     return out;
 }
@@ -52,12 +51,11 @@ Array<T> diagExtract(const Array<T> &in, const int num) {
     Array<T> out      = createEmptyArray<T>(dim4(size, 1, idims[2], idims[3]));
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalDiagonal(type)) {
-        getQueue().enqueue(kernel::diagExtractMetal<T>, out, in, num);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::diagExtract<T>, out, in, num);
+    if (!kernel::supportsMetalDiagonal(type)) {
+        AF_ERROR("Diagonal type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::diagExtractMetal<T>, out, in, num);
 
     return out;
 }

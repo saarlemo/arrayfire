@@ -11,11 +11,8 @@
 #include <err_metal.hpp>
 #include <gradient.hpp>
 #include <kernel/gradient.hpp>
-#include <math.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
-#include <stdexcept>
 
 namespace arrayfire {
 namespace metal {
@@ -23,12 +20,11 @@ namespace metal {
 template<typename T>
 void gradient(Array<T> &grad0, Array<T> &grad1, const Array<T> &in) {
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalGradient(type)) {
-        getQueue().enqueue(kernel::gradientMetal<T>, grad0, grad1, in);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::gradient<T>, grad0, grad1, in);
+    if (!kernel::supportsMetalGradient(type)) {
+        AF_ERROR("Gradient type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::gradientMetal<T>, grad0, grad1, in);
 }
 
 #define INSTANTIATE(T)                                            \

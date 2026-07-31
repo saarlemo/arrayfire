@@ -7,8 +7,11 @@
  * http://arrayfire.com/licenses/BSD-3-Clause
  ********************************************************/
 
+#include <Metal.hpp>
+
 #include <Array.hpp>
 #include <common/ArrayInfo.hpp>
+#include <common/cast.hpp>
 #include <common/complex.hpp>
 #include <common/half.hpp>
 #include <copy.hpp>
@@ -22,6 +25,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <type_traits>
 
 using arrayfire::common::half;  // NOLINT(misc-unused-using-decls) bug in
                                 // clang-tidy
@@ -29,6 +33,32 @@ using arrayfire::common::is_complex;
 
 namespace arrayfire {
 namespace metal {
+namespace {
+
+template<typename T>
+constexpr bool supportsNativeMetalCopy =
+    !std::is_same_v<T, double> && !std::is_same_v<T, cdouble>;
+
+}  // namespace
+
+bool copyBuffer(MTL::Buffer* destination, const size_t destinationOffset,
+                MTL::Buffer* source, const size_t sourceOffset,
+                const size_t bytes) {
+    if (bytes == 0) { return true; }
+    if (!destination || !source) { return false; }
+
+    auto commandBuffer = NS::RetainPtr(getCommandQueue().commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->blitCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder) { return false; }
+
+    encoder->copyFromBuffer(source, sourceOffset, destination,
+                            destinationOffset, bytes);
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    return true;
+}
 
 template<typename T>
 void copyData(T *to, const Array<T> &from) {
@@ -39,10 +69,10 @@ void copyData(T *to, const Array<T> &from) {
     getQueue().sync();
     if (from.isLinear()) {
         // FIXME: Check for errors / exceptions
-        memcpy(to, from.get(), from.elements() * sizeof(T));
+        memcpy(to, from.getHostPtr(), from.elements() * sizeof(T));
     } else {
         dim4 ostrides = calcStrides(from.dims());
-        kernel::stridedCopy<T>(to, ostrides, from.get(), from.dims(),
+        kernel::stridedCopy<T>(to, ostrides, from.getHostPtr(), from.dims(),
                                from.strides(), from.ndims() - 1);
     }
 }
@@ -53,14 +83,11 @@ Array<T> copyArray(const Array<T> &A) {
     if (A.elements() > 0) {
         const af_dtype type =
             static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-        bool positiveStrides = true;
-        for (int i = 0; i < 4; ++i)
-            positiveStrides = positiveStrides && A.strides()[i] >= 0;
-        if (positiveStrides && kernel::supportsMetalCopy(type)) {
-            getQueue().enqueue(kernel::copyMetal<T>, out, A);
-        } else {
-            getQueue().enqueue(kernel::copy<T, T>, out, A);
+        if (!kernel::supportsMetalCopy(type)) {
+            AF_ERROR("Metal copy does not support this type",
+                     AF_ERR_NOT_SUPPORTED);
         }
+        getQueue().enqueueNative(kernel::copyMetal<T>, out, A);
     }
     return out;
 }
@@ -70,7 +97,19 @@ void copyArray(Array<outType> &out, Array<inType> const &in) {
     static_assert(
         !(is_complex<inType>::value && !is_complex<outType>::value),
         "Cannot copy from complex Array<T> to a non complex Array<T>");
-    getQueue().enqueue(kernel::copy<outType, inType>, out, in);
+    if constexpr (supportsNativeMetalCopy<inType> &&
+                  supportsNativeMetalCopy<outType>) {
+        if constexpr (std::is_same_v<inType, outType>) {
+            getQueue().enqueueNative(kernel::copyMetal<outType>, out, in);
+        } else {
+            const Array<outType> converted = common::cast<outType>(in);
+            getQueue().enqueueNative(kernel::copyMetal<outType>, out,
+                                     converted);
+        }
+    } else {
+        AF_ERROR("Metal typed copy does not support double precision",
+                 AF_ERR_NOT_SUPPORTED);
+    }
 }
 
 #define INSTANTIATE(T)                                         \
@@ -148,7 +187,7 @@ template<typename T>
 T getScalar(const Array<T> &in) {
     in.eval();
     getQueue().sync();
-    return in.get()[0];
+    return in.getHostPtr()[0];
 }
 
 #define INSTANTIATE_GETSCALAR(T) template T getScalar(const Array<T> &in);

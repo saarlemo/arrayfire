@@ -7,135 +7,78 @@
  * http://arrayfire.com/licenses/BSD-3-Clause
  ********************************************************/
 
+#define NS_PRIVATE_IMPLEMENTATION
+#define MTL_PRIVATE_IMPLEMENTATION
+#define CA_PRIVATE_IMPLEMENTATION
+#include <Metal.hpp>
+
 #include <common/DefaultMemoryManager.hpp>
 #include <common/err_common.hpp>
 #include <common/graphics_common.hpp>
 #include <device_manager.hpp>
 #include <memory.hpp>
-#include <metal_device.hpp>
 #include <af/version.h>
 
 #include <algorithm>
-#include <cctype>
-#include <sstream>
 
 using arrayfire::common::MemoryManagerBase;
-using std::string;
-
-#ifdef CPUID_CAPABLE
-
-CPUInfo::CPUInfo()
-    : mVendorId("")
-    , mModelName("")
-    , mNumSMT(0)
-    , mNumCores(0)
-    , mNumLogCpus(0)
-    , mIsHTT(false) {
-    // Get vendor name EAX=0
-    CPUID cpuID1(1, 0);
-    mIsHTT = cpuID1.EDX() & HTT_POS;
-
-    CPUID cpuID0(0, 0);
-    uint32_t HFS = cpuID0.EAX();
-    mVendorId += string(reinterpret_cast<const char*>(&cpuID0.EBX()), 4);
-    mVendorId += string(reinterpret_cast<const char*>(&cpuID0.EDX()), 4);
-    mVendorId += string(reinterpret_cast<const char*>(&cpuID0.ECX()), 4);
-
-    string upVId = mVendorId;
-
-    for_each(upVId.begin(), upVId.end(),
-             [](char& in) { in = static_cast<char>(::toupper(in)); });
-
-    // Get num of cores
-    if (upVId.find("INTEL") != std::string::npos) {
-        mVendorId = "Intel";
-        if (HFS >= 11) {
-            for (int lvl = 0; lvl < MAX_INTEL_TOP_LVL; ++lvl) {
-                CPUID cpuID4(0x0B, lvl);
-                uint32_t currLevel = (LVL_TYPE & cpuID4.ECX()) >> 8U;
-                switch (currLevel) {
-                    case 0x01: mNumSMT = LVL_CORES & cpuID4.EBX(); break;
-                    case 0x02: mNumLogCpus = LVL_CORES & cpuID4.EBX(); break;
-                    default: break;
-                }
-            }
-            // Fixes Possible divide by zero error
-            // TODO: Fix properly
-            mNumCores = mNumLogCpus / (mNumSMT == 0 ? 1 : mNumSMT);
-        } else {
-            if (HFS >= 1) {
-                mNumLogCpus = (cpuID1.EBX() >> 16U) & 0xFFU;
-                if (HFS >= 4) {
-                    mNumCores = 1 + ((CPUID(4, 0).EAX() >> 26U) & 0x3FU);
-                }
-            }
-            if (mIsHTT) {
-                if (!(mNumCores > 1)) {
-                    mNumCores   = 1;
-                    mNumLogCpus = (mNumLogCpus >= 2 ? mNumLogCpus : 2U);
-                }
-            } else {
-                mNumCores = mNumLogCpus = 1;
-            }
-        }
-    } else if (upVId.find("AMD") != std::string::npos) {
-        mVendorId = "AMD";
-        if (HFS >= 1) {
-            mNumLogCpus = (cpuID1.EBX() >> 16U) & 0xFFU;
-            if (CPUID(0x80000000, 0).EAX() >= 8U) {
-                mNumCores = 1 + ((CPUID(0x80000008, 0).ECX() & 0xFFU));
-            }
-        }
-        if (mIsHTT) {
-            if (!(mNumCores > 1)) {
-                mNumCores   = 1;
-                mNumLogCpus = (mNumLogCpus >= 2 ? mNumLogCpus : 2);
-            }
-        } else {
-            mNumCores = mNumLogCpus = 1;
-        }
-    } else {
-        mVendorId = "Unknown";
-    }
-    // Get processor brand string
-    // This seems to be working for both Intel & AMD vendors
-    for (unsigned i = 0x80000002; i < 0x80000005; ++i) {
-        CPUID cpuID(i, 0);
-        mModelName += string(reinterpret_cast<const char*>(&cpuID.EAX()), 4);
-        mModelName += string(reinterpret_cast<const char*>(&cpuID.EBX()), 4);
-        mModelName += string(reinterpret_cast<const char*>(&cpuID.ECX()), 4);
-        mModelName += string(reinterpret_cast<const char*>(&cpuID.EDX()), 4);
-    }
-    mModelName.shrink_to_fit();
-}
-
-#else
-
-CPUInfo::CPUInfo()
-    : mVendorId("Unknown")
-    , mModelName("Unknown")
-    , mNumSMT(1)
-    , mNumCores(1)
-    , mNumLogCpus(1)
-    , mIsHTT(false) {}
-
-#endif
-
 namespace arrayfire {
 namespace metal {
 
 DeviceManager::DeviceManager()
-    : queues(MAX_QUEUES)
+    : queues()
+    , nativeDevices()
+    , nativeCommandQueues()
+    , lastCommandBuffers()
+    , commandQueueFailed()
     , fgMngr(new common::ForgeManager())
-    , metalDeviceCount(getMetalDeviceCount())
-    , memManager(new common::DefaultMemoryManager(
-          std::max(1, metalDeviceCount), common::MAX_BUFFERS,
-          AF_MEM_DEBUG || AF_METAL_MEM_DEBUG)) {
-    // Use the default ArrayFire memory manager
-    std::unique_ptr<metal::Allocator> deviceMemoryManager(
-        new metal::Allocator());
-    memManager->setAllocator(std::move(deviceMemoryManager));
-    memManager->initialize();
+    , memManager() {
+    NS::Array* devices = MTL::CopyAllDevices();
+    if (devices) {
+        nativeDevices.reserve(devices->count());
+        nativeCommandQueues.reserve(devices->count());
+        for (NS::UInteger i = 0; i < devices->count(); ++i) {
+            MTL::Device* device = devices->object<MTL::Device>(i);
+            if (!device) { continue; }
+            device->retain();
+            nativeDevices.push_back(device);
+            nativeCommandQueues.push_back(device->newCommandQueue());
+            lastCommandBuffers.push_back(nullptr);
+            commandQueueFailed.push_back(false);
+        }
+        devices->release();
+    }
+
+    if (nativeDevices.empty()) {
+        MTL::Device* device = MTL::CreateSystemDefaultDevice();
+        if (device) {
+            nativeDevices.push_back(device);
+            nativeCommandQueues.push_back(device->newCommandQueue());
+            lastCommandBuffers.push_back(nullptr);
+            commandQueueFailed.push_back(false);
+        }
+    }
+
+    queues.reserve(nativeDevices.size());
+    for (size_t device = 0; device < nativeDevices.size(); ++device) {
+        queues.emplace_back(new queue(static_cast<int>(device)));
+    }
+}
+
+DeviceManager::~DeviceManager() {
+    for (const auto& hostQueue : queues) { hostQueue->sync(); }
+    for (MTL::CommandBuffer* commandBuffer : lastCommandBuffers) {
+        if (commandBuffer) {
+            commandBuffer->waitUntilCompleted();
+            commandBuffer->release();
+        }
+    }
+    for (MTL::CommandQueue* commandQueue : nativeCommandQueues) {
+        if (commandQueue) { commandQueue->release(); }
+    }
+    for (MTL::Device* device : nativeDevices) {
+        if (device) { device->release(); }
+    }
 }
 
 DeviceManager& DeviceManager::getInstance() {
@@ -143,14 +86,14 @@ DeviceManager& DeviceManager::getInstance() {
     return *my_instance;
 }
 
-CPUInfo DeviceManager::getCPUInfo() const { return cinfo; }
-
-int DeviceManager::deviceCount() const { return metalDeviceCount; }
+int DeviceManager::deviceCount() const {
+    return static_cast<int>(nativeDevices.size());
+}
 
 void DeviceManager::resetMemoryManager() {
     // Replace with default memory manager
     std::unique_ptr<MemoryManagerBase> mgr(new common::DefaultMemoryManager(
-        std::max(1, metalDeviceCount), common::MAX_BUFFERS,
+        std::max(1, deviceCount()), common::MAX_BUFFERS,
         AF_MEM_DEBUG || AF_METAL_MEM_DEBUG));
     setMemoryManager(std::move(mgr));
 }
@@ -175,16 +118,21 @@ void DeviceManager::setMemoryManager(
 
 void DeviceManager::setMemoryManagerPinned(
     std::unique_ptr<MemoryManagerBase> newMgr) {
-    UNUSED(newMgr);
-    UNUSED(this);
-    AF_ERROR("Using pinned memory with Metal is not supported",
-             AF_ERR_NOT_SUPPORTED);
+    std::lock_guard<std::mutex> l(mutex);
+    pinnedMemoryManager();
+    if (pinnedMemManager) { pinnedMemManager->shutdownAllocator(); }
+    pinnedMemManager = std::move(newMgr);
+    std::unique_ptr<metal::AllocatorPinned> pinnedAllocator(
+        new metal::AllocatorPinned());
+    pinnedMemManager->setAllocator(std::move(pinnedAllocator));
+    pinnedMemManager->initialize();
 }
 
 void DeviceManager::resetMemoryManagerPinned() {
-    // This is a NOOP - we should never set a pinned memory manager in the first
-    // place for the Metal backend, but don't throw in case backend-agnostic
-    // functions that operate on all memory managers need to call this
+    std::unique_ptr<MemoryManagerBase> mgr(new common::DefaultMemoryManager(
+        std::max(1, deviceCount()), common::MAX_BUFFERS,
+        AF_MEM_DEBUG || AF_METAL_MEM_DEBUG));
+    setMemoryManagerPinned(std::move(mgr));
 }
 
 }  // namespace metal

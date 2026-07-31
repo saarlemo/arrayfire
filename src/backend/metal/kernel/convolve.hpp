@@ -3,289 +3,130 @@
  * All rights reserved.
  *
  * This file is distributed under 3-clause BSD license.
- * The complete license agreement can be obtained at:
+ * The complete license agreement for ArrayFire can be found at:
  * http://arrayfire.com/licenses/BSD-3-Clause
  ********************************************************/
 
 #pragma once
+
 #include <Param.hpp>
-#include <math.hpp>
 #include <af/defines.h>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<typename InT, typename AccT>
-void one2one_1d(InT *optr, InT const *const iptr, AccT const *const fptr,
-                af::dim4 const &oDims, af::dim4 const &sDims,
-                af::dim4 const &fDims, af::dim4 const &sStrides,
-                const bool expand) {
-    dim_t start = (expand ? 0 : fDims[0] / 2);
-    dim_t end   = (expand ? oDims[0] : start + sDims[0]);
-    for (dim_t i = start; i < end; ++i) {
-        AccT accum = 0.0;
-        for (dim_t f = 0; f < fDims[0]; ++f) {
-            dim_t iIdx = i - f;
-            InT s_val =
-                ((iIdx >= 0 && iIdx < sDims[0]) ? iptr[iIdx * sStrides[0]]
-                                                : InT(0));
-            accum += AccT(s_val * fptr[f]);
-        }
-        optr[i - start] = InT(accum);
-    }
-}
+bool supportsMetalConvolve(af_dtype inputType, af_dtype filterType) noexcept;
+
+void launchMetalConvolve(BufferParam output, const af::dim4& outputDims,
+                         const af::dim4& outputStrides, BufferParam signal,
+                         const af::dim4& signalDims,
+                         const af::dim4& signalStrides, BufferParam filter,
+                         const af::dim4& filterDims,
+                         const af::dim4& filterStrides, AF_BATCH_KIND kind,
+                         int rank, bool expand, af_dtype inputType,
+                         af_dtype filterType);
 
 template<typename InT, typename AccT>
-void one2one_2d(InT *optr, InT const *const iptr, AccT const *const fptr,
-                af::dim4 const &oDims, af::dim4 const &sDims,
-                af::dim4 const &fDims, af::dim4 const &oStrides,
-                af::dim4 const &sStrides, af::dim4 const &fStrides,
-                const bool expand) {
-    dim_t jStart = (expand ? 0 : fDims[1] / 2);
-    dim_t jEnd   = (expand ? oDims[1] : jStart + sDims[1]);
-    dim_t iStart = (expand ? 0 : fDims[0] / 2);
-    dim_t iEnd   = (expand ? oDims[0] : iStart + sDims[0]);
-
-    for (dim_t j = jStart; j < jEnd; ++j) {
-        dim_t joff = (j - jStart) * oStrides[1];
-
-        for (dim_t i = iStart; i < iEnd; ++i) {
-            AccT accum = AccT(0);
-            for (dim_t wj = 0; wj < fDims[1]; ++wj) {
-                dim_t jIdx    = j - wj;
-                dim_t w_joff  = wj * fStrides[1];
-                dim_t s_joff  = jIdx * sStrides[1];
-                bool isJValid = (jIdx >= 0 && jIdx < sDims[1]);
-
-                for (dim_t wi = 0; wi < fDims[0]; ++wi) {
-                    dim_t iIdx = i - wi;
-
-                    InT s_val = InT(0);
-                    if (isJValid && (iIdx >= 0 && iIdx < sDims[0])) {
-                        s_val = iptr[s_joff + iIdx * sStrides[0]];
-                    }
-
-                    accum += AccT(s_val * fptr[w_joff + wi * fStrides[0]]);
-                }
-            }
-            optr[joff + i - iStart] = InT(accum);
-        }
-    }
+void convolveMetal(Param<InT> output, CParam<InT> signal,
+                   CParam<AccT> filter, const AF_BATCH_KIND kind,
+                   const int rank, const bool expand) {
+    launchMetalConvolve(
+        output.bufferParam(), output.dims(), output.strides(),
+        signal.bufferParam(), signal.dims(), signal.strides(),
+        filter.bufferParam(), filter.dims(), filter.strides(), kind, rank,
+        expand, static_cast<af_dtype>(af::dtype_traits<InT>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<AccT>::af_type));
 }
+
+bool supportsMetalSeparableConvolve(af_dtype inputType,
+                                    af_dtype filterType) noexcept;
+
+void launchMetalSeparableConvolve(
+    BufferParam output, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam temp,
+    const af::dim4& tempDims, const af::dim4& tempStrides, BufferParam signal,
+    const af::dim4& signalDims, const af::dim4& signalStrides,
+    BufferParam columnFilter, const af::dim4& columnFilterDims,
+    const af::dim4& columnFilterStrides, BufferParam rowFilter,
+    const af::dim4& rowFilterDims, const af::dim4& rowFilterStrides,
+    bool expand, af_dtype inputType, af_dtype filterType);
 
 template<typename InT, typename AccT>
-void one2one_3d(InT *optr, InT const *const iptr, AccT const *const fptr,
-                af::dim4 const &oDims, af::dim4 const &sDims,
-                af::dim4 const &fDims, af::dim4 const &oStrides,
-                af::dim4 const &sStrides, af::dim4 const &fStrides,
-                const bool expand) {
-    dim_t kStart = (expand ? 0 : fDims[2] / 2);
-    dim_t kEnd   = (expand ? oDims[2] : kStart + sDims[2]);
-    dim_t jStart = (expand ? 0 : fDims[1] / 2);
-    dim_t jEnd   = (expand ? oDims[1] : jStart + sDims[1]);
-    dim_t iStart = (expand ? 0 : fDims[0] / 2);
-    dim_t iEnd   = (expand ? oDims[0] : iStart + sDims[0]);
-
-    for (dim_t k = kStart; k < kEnd; ++k) {
-        dim_t koff = (k - kStart) * oStrides[2];
-
-        for (dim_t j = jStart; j < jEnd; ++j) {
-            dim_t joff = (j - jStart) * oStrides[1];
-
-            for (dim_t i = iStart; i < iEnd; ++i) {
-                AccT accum = AccT(0);
-                for (dim_t wk = 0; wk < fDims[2]; ++wk) {
-                    dim_t kIdx    = k - wk;
-                    dim_t w_koff  = wk * fStrides[2];
-                    dim_t s_koff  = kIdx * sStrides[2];
-                    bool isKValid = (kIdx >= 0 && kIdx < sDims[2]);
-
-                    for (dim_t wj = 0; wj < fDims[1]; ++wj) {
-                        dim_t jIdx    = j - wj;
-                        dim_t w_joff  = wj * fStrides[1];
-                        dim_t s_joff  = jIdx * sStrides[1];
-                        bool isJValid = (jIdx >= 0 && jIdx < sDims[1]);
-
-                        for (dim_t wi = 0; wi < fDims[0]; ++wi) {
-                            dim_t iIdx = i - wi;
-
-                            InT s_val = InT(0);
-                            if (isKValid && isJValid &&
-                                (iIdx >= 0 && iIdx < sDims[0])) {
-                                s_val =
-                                    iptr[s_koff + s_joff + iIdx * sStrides[0]];
-                            }
-
-                            accum +=
-                                AccT(s_val *
-                                     fptr[w_koff + w_joff + wi * fStrides[0]]);
-                        }
-                    }
-                }
-                optr[koff + joff + i - iStart] = InT(accum);
-            }  // i loop ends here
-        }  // j loop ends here
-    }  // k loop ends here
+void separableConvolveMetal(Param<InT> output, Param<InT> temp,
+                            CParam<InT> signal, CParam<AccT> columnFilter,
+                            CParam<AccT> rowFilter, const bool expand) {
+    launchMetalSeparableConvolve(
+        output.bufferParam(), output.dims(), output.strides(),
+        temp.bufferParam(), temp.dims(), temp.strides(), signal.bufferParam(),
+        signal.dims(), signal.strides(), columnFilter.bufferParam(),
+        columnFilter.dims(), columnFilter.strides(), rowFilter.bufferParam(),
+        rowFilter.dims(), rowFilter.strides(), expand,
+        static_cast<af_dtype>(af::dtype_traits<InT>::af_type),
+        static_cast<af_dtype>(af::dtype_traits<AccT>::af_type));
 }
 
-template<typename InT, typename AccT>
-void convolve_nd(Param<InT> out, CParam<InT> signal, CParam<AccT> filter,
-                 AF_BATCH_KIND kind, const int rank, const bool expand) {
-    InT *optr              = out.get();
-    InT const *const iptr  = signal.get();
-    AccT const *const fptr = filter.get();
+bool supportsMetalConvolveNN(af_dtype type) noexcept;
 
-    af::dim4 const oDims = out.dims();
-    af::dim4 const sDims = signal.dims();
-    af::dim4 const fDims = filter.dims();
+void launchMetalConvolveNN(
+    BufferParam output, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam signal,
+    const af::dim4& signalDims, const af::dim4& signalStrides,
+    BufferParam filter, const af::dim4& filterDims,
+    const af::dim4& filterStrides, const af::dim4& stride,
+    const af::dim4& padding, const af::dim4& dilation, af_dtype type);
 
-    af::dim4 const oStrides = out.strides();
-    af::dim4 const sStrides = signal.strides();
-    af::dim4 const fStrides = filter.strides();
+void launchMetalConvolveNNDataGradient(
+    BufferParam output, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam incomingGradient,
+    const af::dim4& incomingGradientDims,
+    const af::dim4& incomingGradientStrides, BufferParam filter,
+    const af::dim4& filterDims, const af::dim4& filterStrides,
+    const af::dim4& stride, const af::dim4& padding,
+    const af::dim4& dilation, af_dtype type);
 
-    dim_t out_step[AF_MAX_DIMS] = {
-        0, 0, 0,
-        0}; /* first value is never used, and declared for code simplicity */
-    dim_t in_step[AF_MAX_DIMS] = {
-        0, 0, 0,
-        0}; /* first value is never used, and declared for code simplicity */
-    dim_t filt_step[AF_MAX_DIMS] = {
-        0, 0, 0,
-        0}; /* first value is never used, and declared for code simplicity */
-    dim_t batch[AF_MAX_DIMS] = {
-        0, 1, 1,
-        1}; /* first value is never used, and declared for code simplicity */
+void launchMetalConvolveNNFilterGradient(
+    BufferParam output, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam signal,
+    const af::dim4& signalDims, const af::dim4& signalStrides,
+    BufferParam incomingGradient, const af::dim4& incomingGradientDims,
+    const af::dim4& incomingGradientStrides, const af::dim4& stride,
+    const af::dim4& padding, const af::dim4& dilation, af_dtype type);
 
-    for (dim_t i = 1; i < 4; ++i) {
-        switch (kind) {
-            case AF_BATCH_LHS:
-                out_step[i] = oStrides[i];
-                in_step[i]  = sStrides[i];
-                if (i >= rank) batch[i] = sDims[i];
-                break;
-            case AF_BATCH_SAME:
-                out_step[i]  = oStrides[i];
-                in_step[i]   = sStrides[i];
-                filt_step[i] = fStrides[i];
-                if (i >= rank) batch[i] = sDims[i];
-                break;
-            case AF_BATCH_RHS:
-                out_step[i]  = oStrides[i];
-                filt_step[i] = fStrides[i];
-                if (i >= rank) batch[i] = fDims[i];
-                break;
-            default: break;
-        }
-    }
-
-    for (dim_t b3 = 0; b3 < batch[3]; ++b3) {
-        for (dim_t b2 = 0; b2 < batch[2]; ++b2) {
-            for (dim_t b1 = 0; b1 < batch[1]; ++b1) {
-                InT *out = optr + b1 * out_step[1] + b2 * out_step[2] +
-                           b3 * out_step[3];
-                InT const *in =
-                    iptr + b1 * in_step[1] + b2 * in_step[2] + b3 * in_step[3];
-                AccT const *filt = fptr + b1 * filt_step[1] +
-                                   b2 * filt_step[2] + b3 * filt_step[3];
-
-                switch (rank) {
-                    case 1:
-                        one2one_1d<InT, AccT>(out, in, filt, oDims, sDims,
-                                              fDims, sStrides, expand);
-                        break;
-                    case 2:
-                        one2one_2d<InT, AccT>(out, in, filt, oDims, sDims,
-                                              fDims, oStrides, sStrides,
-                                              fStrides, expand);
-                        break;
-                    case 3:
-                        one2one_3d<InT, AccT>(out, in, filt, oDims, sDims,
-                                              fDims, oStrides, sStrides,
-                                              fStrides, expand);
-                        break;
-                }
-            }
-        }
-    }
+template<typename T>
+void convolveNNMetal(Param<T> output, CParam<T> signal, CParam<T> filter,
+                     const af::dim4 stride, const af::dim4 padding,
+                     const af::dim4 dilation) {
+    launchMetalConvolveNN(
+        output.bufferParam(), output.dims(), output.strides(),
+        signal.bufferParam(), signal.dims(), signal.strides(),
+        filter.bufferParam(), filter.dims(), filter.strides(), stride, padding,
+        dilation, static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
-template<typename InT, typename AccT, bool Expand, int ConvDim>
-void convolve2_separable(InT *optr, InT const *const iptr,
-                         AccT const *const fptr, af::dim4 const &oDims,
-                         af::dim4 const &sDims, af::dim4 const &orgDims,
-                         dim_t fDim, af::dim4 const &oStrides,
-                         af::dim4 const &sStrides, dim_t fStride) {
-    UNUSED(orgDims);
-    UNUSED(sStrides);
-    UNUSED(fStride);
-    for (dim_t j = 0; j < oDims[1]; ++j) {
-        dim_t jOff = j * oStrides[1];
-        dim_t cj   = j + (ConvDim == 1) * (Expand ? 0 : fDim >> 1);
-
-        for (dim_t i = 0; i < oDims[0]; ++i) {
-            dim_t iOff = i * oStrides[0];
-            dim_t ci   = i + (ConvDim == 0) * (Expand ? 0 : fDim >> 1);
-
-            AccT accum = scalar<AccT>(0);
-
-            for (dim_t f = 0; f < fDim; ++f) {
-                InT f_val = fptr[f];
-                InT s_val;
-
-                if (ConvDim == 0) {
-                    dim_t offi     = ci - f;
-                    bool isCIValid = offi >= 0 && offi < sDims[0];
-                    bool isCJValid = cj >= 0 && cj < sDims[1];
-                    s_val = (isCJValid && isCIValid ? iptr[cj * sDims[0] + offi]
-                                                    : scalar<InT>(0));
-                } else {
-                    dim_t offj     = cj - f;
-                    bool isCIValid = ci >= 0 && ci < sDims[0];
-                    bool isCJValid = offj >= 0 && offj < sDims[1];
-                    s_val = (isCJValid && isCIValid ? iptr[offj * sDims[0] + ci]
-                                                    : scalar<InT>(0));
-                }
-
-                accum += AccT(s_val * f_val);
-            }
-            optr[iOff + jOff] = InT(accum);
-        }
-    }
+template<typename T>
+void convolveNNDataGradientMetal(
+    Param<T> output, CParam<T> incomingGradient, CParam<T> filter,
+    const af::dim4 stride, const af::dim4 padding, const af::dim4 dilation) {
+    launchMetalConvolveNNDataGradient(
+        output.bufferParam(), output.dims(), output.strides(),
+        incomingGradient.bufferParam(), incomingGradient.dims(),
+        incomingGradient.strides(), filter.bufferParam(), filter.dims(),
+        filter.strides(), stride, padding, dilation,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
-template<typename InT, typename AccT, bool Expand>
-void convolve2(Param<InT> out, CParam<InT> signal, CParam<AccT> c_filter,
-               CParam<AccT> r_filter, Param<InT> temp) {
-    dim_t cflen = (dim_t)c_filter.dims().elements();
-    dim_t rflen = (dim_t)r_filter.dims().elements();
-
-    auto oDims = out.dims();
-    auto sDims = signal.dims();
-
-    auto oStrides = out.strides();
-    auto sStrides = signal.strides();
-    auto tStrides = temp.strides();
-
-    for (dim_t b3 = 0; b3 < oDims[3]; ++b3) {
-        dim_t i_b3Off = b3 * sStrides[3];
-        dim_t t_b3Off = b3 * tStrides[3];
-        dim_t o_b3Off = b3 * oStrides[3];
-
-        for (dim_t b2 = 0; b2 < oDims[2]; ++b2) {
-            InT const *const iptr = signal.get() + b2 * sStrides[2] + i_b3Off;
-            InT *tptr             = temp.get() + b2 * tStrides[2] + t_b3Off;
-            InT *optr             = out.get() + b2 * oStrides[2] + o_b3Off;
-
-            convolve2_separable<InT, AccT, Expand, 0>(
-                tptr, iptr, c_filter.get(), temp.dims(), sDims, sDims, cflen,
-                tStrides, sStrides, c_filter.strides(0));
-
-            convolve2_separable<InT, AccT, Expand, 1>(
-                optr, tptr, r_filter.get(), oDims, temp.dims(), sDims, rflen,
-                oStrides, tStrides, r_filter.strides(0));
-        }
-    }
+template<typename T>
+void convolveNNFilterGradientMetal(
+    Param<T> output, CParam<T> signal, CParam<T> incomingGradient,
+    const af::dim4 stride, const af::dim4 padding, const af::dim4 dilation) {
+    launchMetalConvolveNNFilterGradient(
+        output.bufferParam(), output.dims(), output.strides(),
+        signal.bufferParam(), signal.dims(), signal.strides(),
+        incomingGradient.bufferParam(), incomingGradient.dims(),
+        incomingGradient.strides(), stride, padding, dilation,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

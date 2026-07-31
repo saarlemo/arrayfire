@@ -9,69 +9,52 @@
 
 #pragma once
 #include <Param.hpp>
+#include <af/traits.hpp>
+#include <cstddef>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalLu(af_dtype) noexcept;
+bool supportsMetalLuFactor(af_dtype) noexcept;
+void launchMetalLuFactor(BufferParam, size_t, const af::dim4 &,
+                         const af::dim4 &, BufferParam, size_t,
+                         const af::dim4 &, af_dtype);
+void launchMetalLuPart(BufferParam, size_t, const af::dim4 &, const af::dim4 &,
+                       BufferParam, size_t, const af::dim4 &, const af::dim4 &,
+                       bool, af_dtype);
+void launchMetalConvertPivot(BufferParam, size_t, const af::dim4 &, BufferParam,
+                             size_t, const af::dim4 &);
 template<typename T>
-void lu_split(Param<T> lower, Param<T> upper, CParam<T> in) {
-    T *l       = lower.get();
-    T *u       = upper.get();
-    const T *i = in.get();
-
-    af::dim4 ldm = lower.dims();
-    af::dim4 udm = upper.dims();
-    af::dim4 idm = in.dims();
-    af::dim4 lst = lower.strides();
-    af::dim4 ust = upper.strides();
-    af::dim4 ist = in.strides();
-
-    for (dim_t ow = 0; ow < idm[3]; ow++) {
-        const dim_t lW = ow * lst[3];
-        const dim_t uW = ow * ust[3];
-        const dim_t iW = ow * ist[3];
-
-        for (dim_t oz = 0; oz < idm[2]; oz++) {
-            const dim_t lZW = lW + oz * lst[2];
-            const dim_t uZW = uW + oz * ust[2];
-            const dim_t iZW = iW + oz * ist[2];
-
-            for (dim_t oy = 0; oy < idm[1]; oy++) {
-                const dim_t lYZW = lZW + oy * lst[1];
-                const dim_t uYZW = uZW + oy * ust[1];
-                const dim_t iYZW = iZW + oy * ist[1];
-
-                for (dim_t ox = 0; ox < idm[0]; ox++) {
-                    const dim_t lMem = lYZW + ox;
-                    const dim_t uMem = uYZW + ox;
-                    const dim_t iMem = iYZW + ox;
-                    if (ox > oy) {
-                        if (oy < ldm[1]) l[lMem] = i[iMem];
-                        if (ox < udm[0]) u[uMem] = scalar<T>(0);
-                    } else if (oy > ox) {
-                        if (oy < ldm[1]) l[lMem] = scalar<T>(0);
-                        if (ox < udm[0]) u[uMem] = i[iMem];
-                    } else if (ox == oy) {
-                        if (oy < ldm[1]) l[lMem] = scalar<T>(1.0);
-                        if (ox < udm[0]) u[uMem] = i[iMem];
-                    }
-                }
-            }
-        }
-    }
+void luFactorMetal(Param<T> in, Param<int> pivot) {
+    const auto type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    launchMetalLuFactor(
+        in.bufferParam(), size_t(in.dims().elements()) * sizeof(T), in.dims(),
+        in.strides(), pivot.bufferParam(),
+        size_t(pivot.dims().elements()) * sizeof(int), pivot.dims(), type);
 }
 
-void convertPivot(Param<int> p, Param<int> pivot) {
-    int *d_pi = pivot.get();
-    int *d_po = p.get();
-    dim_t d0  = pivot.dims(0);
-    for (int j = 0; j < (int)d0; j++) {
-        // 1 indexed in pivot
-        std::swap(d_po[j], d_po[d_pi[j] - 1]);
-    }
+template<typename T>
+void luSplitMetal(Param<T> l, Param<T> u, CParam<T> in) {
+    size_t n = 1;
+    for (int i = 0; i < 4; ++i)
+        n += size_t(in.dims(i) - 1) * size_t(in.strides(i));
+    auto t = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    launchMetalLuPart(l.bufferParam(), size_t(l.dims().elements()) * sizeof(T),
+                      l.dims(), l.strides(), in.bufferParam(), n * sizeof(T),
+                      in.dims(), in.strides(), true, t);
+    launchMetalLuPart(u.bufferParam(), size_t(u.dims().elements()) * sizeof(T),
+                      u.dims(), u.strides(), in.bufferParam(), n * sizeof(T),
+                      in.dims(), in.strides(), false, t);
 }
-
+inline void convertPivotMetal(Param<int> p, Param<int> pivot) {
+    launchMetalConvertPivot(p.bufferParam(),
+                            size_t(p.dims().elements()) * sizeof(int), p.dims(),
+                            pivot.bufferParam(),
+                            size_t(pivot.dims().elements()) * sizeof(int),
+                            pivot.dims());
+}
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

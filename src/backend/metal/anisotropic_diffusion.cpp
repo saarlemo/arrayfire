@@ -8,8 +8,9 @@
  ********************************************************/
 
 #include <anisotropic_diffusion.hpp>
+#include <Array.hpp>
+#include <err_metal.hpp>
 #include <kernel/anisotropic_diffusion.hpp>
-#include <metal_compute_anisotropic_diffusion.hpp>
 #include <platform.hpp>
 
 #include <type_traits>
@@ -21,14 +22,11 @@ void anisotropicDiffusion(Array<T>& inout, const float dt, const float mct,
                           const af::fluxFunction fftype,
                           const af::diffusionEq eq) {
     if constexpr (std::is_same<T, float>::value) {
-        getQueue().enqueue(kernel::anisotropicDiffusionMetal, inout, dt, mct,
-                           fftype, eq == AF_DIFFUSION_MCDE);
-    } else if (eq == AF_DIFFUSION_MCDE) {
-        getQueue().enqueue(kernel::anisotropicDiffusion<T, true>, inout, dt,
-                           mct, fftype);
+        getQueue().enqueueNative(kernel::anisotropicDiffusionMetal, inout, dt,
+                                 mct, fftype, eq == AF_DIFFUSION_MCDE);
     } else {
-        getQueue().enqueue(kernel::anisotropicDiffusion<T, false>, inout, dt,
-                           mct, fftype);
+        AF_ERROR("Anisotropic diffusion type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
 }
 

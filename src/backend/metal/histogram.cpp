@@ -9,9 +9,9 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <histogram.hpp>
 #include <kernel/histogram.hpp>
-#include <metal_compute_histogram.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
@@ -30,16 +30,12 @@ Array<uint> histogram(const Array<T> &in, const unsigned &nbins,
     dim4 outDims        = dim4(nbins, 1, inDims[2], inDims[3]);
     Array<uint> out     = createValueArray<uint>(outDims, uint(0));
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalHistogram(type)) {
-        getQueue().enqueue(kernel::histogramMetal<T>, out, in, nbins, minval,
-                           maxval, isLinear);
-    } else if (isLinear) {
-        getQueue().enqueue(kernel::histogram<T, true>, out, in, nbins, minval,
-                           maxval);
-    } else {
-        getQueue().enqueue(kernel::histogram<T, false>, out, in, nbins, minval,
-                           maxval);
+    if (!kernel::supportsMetalHistogram(type)) {
+        AF_ERROR("Histogram input type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::histogramMetal<T>, out, in, nbins, minval,
+                             maxval, isLinear);
     return out;
 }
 

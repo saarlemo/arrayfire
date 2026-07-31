@@ -9,53 +9,43 @@
 
 #pragma once
 #include <Param.hpp>
+#include <af/traits.hpp>
+
+#include <vector>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-af::dim4 calcOffset(const af::dim4 dims, int dim) {
-    af::dim4 offset;
-    offset[0] = (dim == 0) ? dims[0] : 0;
-    offset[1] = (dim == 1) ? dims[1] : 0;
-    offset[2] = (dim == 2) ? dims[2] : 0;
-    offset[3] = (dim == 3) ? dims[3] : 0;
-    return offset;
-}
+bool supportsMetalJoin(af_dtype type) noexcept;
+
+void launchMetalJoinAppend(BufferParam output, size_t outputBytes,
+                           const af::dim4& outputDims,
+                           const af::dim4& outputStrides, BufferParam input,
+                           size_t inputBytes, const af::dim4& inputDims,
+                           const af::dim4& inputStrides,
+                           const af::dim4& outputOffset, af_dtype type);
 
 template<typename T>
-void join_append(T *out, const T *X, const af::dim4 &offset,
-                 const af::dim4 &xdims, const af::dim4 &ost,
-                 const af::dim4 &xst) {
-    for (dim_t ow = 0; ow < xdims[3]; ow++) {
-        const dim_t xW = ow * xst[3];
-        const dim_t oW = (ow + offset[3]) * ost[3];
-
-        for (dim_t oz = 0; oz < xdims[2]; oz++) {
-            const dim_t xZW = xW + oz * xst[2];
-            const dim_t oZW = oW + (oz + offset[2]) * ost[2];
-
-            for (dim_t oy = 0; oy < xdims[1]; oy++) {
-                const dim_t xYZW = xZW + oy * xst[1];
-                const dim_t oYZW = oZW + (oy + offset[1]) * ost[1];
-
-                memcpy(out + oYZW + offset[0], X + xYZW, xdims[0] * sizeof(T));
-            }
+void joinMetal(const int dim, Param<T> output,
+               const std::vector<CParam<T>> inputs, const int inputCount) {
+    af::dim4 outputOffset(0, 0, 0, 0);
+    for (int inputIndex = 0; inputIndex < inputCount; ++inputIndex) {
+        const CParam<T>& input = inputs[inputIndex];
+        if (input.dims().elements() == 0) { continue; }
+        size_t inputElements = 1;
+        for (int i = 0; i < 4; ++i) {
+            inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                             static_cast<size_t>(input.strides(i));
         }
-    }
-}
-
-template<typename T>
-void join(const int dim, Param<T> out, const std::vector<CParam<T>> inputs,
-          int n_arrays) {
-    af::dim4 zero(0, 0, 0, 0);
-    af::dim4 d = zero;
-    join_append<T>(out.get(), inputs[0].get(), zero, inputs[0].dims(),
-                   out.strides(), inputs[0].strides());
-    for (int i = 1; i < n_arrays; i++) {
-        d += inputs[i - 1].dims();
-        join_append<T>(out.get(), inputs[i].get(), calcOffset(d, dim),
-                       inputs[i].dims(), out.strides(), inputs[i].strides());
+        launchMetalJoinAppend(
+            output.bufferParam(),
+            static_cast<size_t>(output.dims().elements()) * sizeof(T),
+            output.dims(), output.strides(), input.bufferParam(),
+            inputElements * sizeof(T), input.dims(), input.strides(),
+            outputOffset,
+            static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+        outputOffset[dim] += input.dims(dim);
     }
 }
 

@@ -8,8 +8,8 @@
  ********************************************************/
 
 #include <Array.hpp>
+#include <err_metal.hpp>
 #include <kernel/rotate.hpp>
-#include <metal_compute_rotate.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <rotate.hpp>
@@ -22,27 +22,21 @@ Array<T> rotate(const Array<T> &in, const float theta, const af::dim4 &odims,
                 const af_interp_type method) {
     Array<T> out        = createEmptyArray<T>(odims);
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalRotate(type, method)) {
-        getQueue().enqueue(kernel::rotateMetal<T>, out, in, theta, method);
-        return out;
-    }
-
     switch (method) {
         case AF_INTERP_NEAREST:
         case AF_INTERP_LOWER:
-            getQueue().enqueue(kernel::rotate<T, 1>, out, in, theta, method);
-            break;
         case AF_INTERP_BILINEAR:
         case AF_INTERP_BILINEAR_COSINE:
-            getQueue().enqueue(kernel::rotate<T, 2>, out, in, theta, method);
-            break;
         case AF_INTERP_BICUBIC:
-        case AF_INTERP_BICUBIC_SPLINE:
-            getQueue().enqueue(kernel::rotate<T, 3>, out, in, theta, method);
-            break;
-        default: AF_ERROR("Unsupported interpolation type", AF_ERR_ARG); break;
+        case AF_INTERP_BICUBIC_SPLINE: break;
+        default: AF_ERROR("Unsupported interpolation type", AF_ERR_ARG);
+    }
+    if (!kernel::supportsMetalRotate(type, method)) {
+        AF_ERROR("Rotation type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
 
+    getQueue().enqueueNative(kernel::rotateMetal<T>, out, in, theta, method);
     return out;
 }
 

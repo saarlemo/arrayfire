@@ -10,9 +10,9 @@
 #include <Array.hpp>
 #include <common/dispatch.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <kernel/wrap.hpp>
 #include <math.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <wrap.hpp>
 
@@ -28,17 +28,12 @@ void wrap(Array<T> &out, const Array<T> &in, const dim_t wx, const dim_t wy,
     evalMultiple<T>(std::vector<Array<T> *>{const_cast<Array<T> *>(&in), &out});
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalWrap(type)) {
-        getQueue().enqueue(kernel::wrapMetal<T>, out, in, wx, wy, sx, sy, px,
-                           py, 1, 1, is_column ? 1 : 0);
-    } else if (is_column) {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::wrap_dim<T, 1>, out, in, wx, wy, sx, sy, px,
-                           py);
-    } else {
-        getQueue().enqueue(kernel::wrap_dim<T, 0>, out, in, wx, wy, sx, sy, px,
-                           py);
+    if (!kernel::supportsMetalWrap(type)) {
+        AF_ERROR("Wrap type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::wrapMetal<T>, out, in, wx, wy, sx, sy, px,
+                             py, 1, 1, is_column ? 1 : 0);
 }
 
 #define INSTANTIATE(T)                                                        \
@@ -75,14 +70,12 @@ Array<T> wrap_dilated(const Array<T> &in, const dim_t ox, const dim_t oy,
     in.eval();
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalWrap(type)) {
-        getQueue().enqueue(kernel::wrapMetal<T>, out, in, wx, wy, sx, sy, px,
-                           py, dx, dy, is_column ? 1 : 0);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::wrap_dim_dilated<T>, out, in, wx, wy, sx, sy,
-                           px, py, dx, dy, is_column);
+    if (!kernel::supportsMetalWrap(type)) {
+        AF_ERROR("Dilated wrap type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::wrapMetal<T>, out, in, wx, wy, sx, sy, px,
+                             py, dx, dy, is_column ? 1 : 0);
 
     return out;
 }

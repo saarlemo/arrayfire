@@ -8,10 +8,8 @@
  ********************************************************/
 
 #include <Array.hpp>
-#include <copy.hpp>
+#include <err_metal.hpp>
 #include <kernel/transform.hpp>
-#include <math.hpp>
-#include <metal_compute_transform.hpp>
 #include <platform.hpp>
 #include <transform.hpp>
 
@@ -25,37 +23,26 @@ void transform(Array<T> &out, const Array<T> &in, const Array<float> &tf,
     out.eval();
     in.eval();
 
-    // TODO: Temporary Fix, must fix handling subarrays upstream
-    // tf has to be linear, although offset is allowed
-    const Array<float> tf_Lin = tf.isLinear() ? tf : copyArray(tf);
     tf.eval();
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (out.isLinear() && kernel::supportsMetalTransform(
-                              type, method, in.dims(), tf_Lin.dims())) {
-        getQueue().enqueue(kernel::transformMetal<T>, out, in, tf_Lin, method,
-                           inverse, perspective);
-        return;
-    }
-
     switch (method) {
         case AF_INTERP_NEAREST:
         case AF_INTERP_LOWER:
-            getQueue().enqueue(kernel::transform<T, 1>, out, in, tf_Lin,
-                               inverse, perspective, method);
-            break;
         case AF_INTERP_BILINEAR:
         case AF_INTERP_BILINEAR_COSINE:
-            getQueue().enqueue(kernel::transform<T, 2>, out, in, tf_Lin,
-                               inverse, perspective, method);
-            break;
         case AF_INTERP_BICUBIC:
         case AF_INTERP_BICUBIC_SPLINE:
-            getQueue().enqueue(kernel::transform<T, 3>, out, in, tf_Lin,
-                               inverse, perspective, method);
             break;
         default: AF_ERROR("Unsupported interpolation type", AF_ERR_ARG); break;
     }
+
+    if (!kernel::supportsMetalTransform(type, method)) {
+        AF_ERROR("Metal transform does not support this type",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::transformMetal<T>, out, in, tf, method,
+                             inverse, perspective);
 }
 
 #define INSTANTIATE(T)                                                       \

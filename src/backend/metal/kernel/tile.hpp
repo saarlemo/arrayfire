@@ -9,42 +9,32 @@
 
 #pragma once
 #include <Param.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalTile(af_dtype type) noexcept;
+
+void launchMetalTile(BufferParam output, size_t outputBytes,
+                     const af::dim4& outputDims, const af::dim4& outputStrides,
+                     BufferParam input, size_t inputBytes,
+                     const af::dim4& inputDims, const af::dim4& inputStrides,
+                     af_dtype type);
+
 template<typename T>
-void tile(Param<T> out, CParam<T> in) {
-    T* outPtr      = out.get();
-    const T* inPtr = in.get();
-
-    const af::dim4 iDims = in.dims();
-    const af::dim4 oDims = out.dims();
-    const af::dim4 ist   = in.strides();
-    const af::dim4 ost   = out.strides();
-
-    for (dim_t ow = 0; ow < oDims[3]; ow++) {
-        const dim_t iw = ow % iDims[3];
-        const dim_t iW = iw * ist[3];
-        const dim_t oW = ow * ost[3];
-        for (dim_t oz = 0; oz < oDims[2]; oz++) {
-            const dim_t iz  = oz % iDims[2];
-            const dim_t iZW = iW + iz * ist[2];
-            const dim_t oZW = oW + oz * ost[2];
-            for (dim_t oy = 0; oy < oDims[1]; oy++) {
-                const dim_t iy   = oy % iDims[1];
-                const dim_t iYZW = iZW + iy * ist[1];
-                const dim_t oYZW = oZW + oy * ost[1];
-                for (dim_t ox = 0; ox < oDims[0]; ox++) {
-                    const dim_t ix   = ox % iDims[0];
-                    const dim_t iMem = iYZW + ix;
-                    const dim_t oMem = oYZW + ox;
-                    outPtr[oMem]     = inPtr[iMem];
-                }
-            }
-        }
+void tileMetal(Param<T> output, CParam<T> input) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalTile(output.bufferParam(),
+                    static_cast<size_t>(output.dims().elements()) * sizeof(T),
+                    output.dims(), output.strides(), input.bufferParam(),
+                    inputElements * sizeof(T), input.dims(), input.strides(),
+                    static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

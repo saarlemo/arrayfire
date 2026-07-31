@@ -10,113 +10,56 @@
 #include <Array.hpp>
 #include <common/half.hpp>
 #include <index.hpp>
-#include <sort.hpp>
+#include <kernel/topk.hpp>
+#include <platform.hpp>
 #include <sort_index.hpp>
 
-#include <algorithm>
-#include <cmath>
-#include <numeric>
+#include <type_traits>
 #include <vector>
 
 using arrayfire::common::half;
-using std::iota;
-using std::min;
-using std::partial_sort_copy;
 using std::vector;
 
 namespace arrayfire {
 namespace metal {
+
+namespace {
+
+vector<af_index_t> indexForTopK(const int k) {
+    af_index_t first;
+    first.idx.seq = af_seq{0.0, static_cast<double>(k) - 1.0, 1.0};
+    first.isSeq   = true;
+    first.isBatch = false;
+
+    af_index_t span;
+    span.idx.seq = af_span;
+    span.isSeq   = true;
+    span.isBatch = false;
+
+    return {first, span, span, span};
+}
+
+}  // namespace
+
 template<typename T>
 void topk(Array<T>& vals, Array<unsigned>& idxs, const Array<T>& in,
           const int k, const int dim, const af::topkFunction order) {
-    // The out_dims is of size k along the dimension of the topk operation
-    // and the same as the input dimension otherwise.
-    dim4 out_dims(1);
-    int ndims = in.dims().ndims();
-    for (int i = 0; i < ndims; i++) {
-        if (i == dim) {
-            out_dims[i] = min(k, static_cast<int>(in.dims()[i]));
-        } else {
-            out_dims[i] = in.dims()[i];
-        }
+    if constexpr (!std::is_same<T, double>::value) {
+        auto outputDims = in.dims();
+        outputDims[0]   = k;
+        vals            = createEmptyArray<T>(outputDims);
+        idxs            = createEmptyArray<unsigned>(outputDims);
+        getQueue().enqueueNative(kernel::topKMetal<T>, vals, idxs, in, k,
+                                 bool(order & AF_TOPK_MIN));
+        return;
+    } else {
+        auto indices   = createEmptyArray<unsigned>(in.dims());
+        auto selection = indexForTopK(k);
+        auto sorted    = createEmptyArray<T>(in.dims());
+        sort_index(sorted, indices, in, dim, order & AF_TOPK_MIN);
+        vals = index<T>(sorted, selection.data());
+        idxs = index<unsigned>(indices, selection.data());
     }
-
-    auto values  = createEmptyArray<T>(out_dims);
-    auto indices = createEmptyArray<unsigned>(out_dims);
-
-    auto func = [=](Param<T> values, Param<unsigned> indices, CParam<T> in) {
-        const T* ptr   = in.get();
-        unsigned* iptr = indices.get();
-        T* vptr        = values.get();
-
-        // Create a linear index
-        vector<uint> idx(in.dims().elements());
-        iota(begin(idx), end(idx), 0);
-
-        int iter = in.dims()[1] * in.dims()[2] * in.dims()[3];
-        for (int i = 0; i < iter; i++) {
-            auto idx_itr = begin(idx) + i * in.strides()[1];
-            auto* kiptr  = iptr + k * i;
-
-            if (order & AF_TOPK_MIN) {
-                if (order & AF_TOPK_STABLE) {
-                    partial_sort_copy(
-                        idx_itr, idx_itr + in.strides()[1], kiptr, kiptr + k,
-                        [ptr](const uint lhs, const uint rhs) -> bool {
-                            return compute_t<T>(ptr[lhs]) <
-                                           compute_t<T>(ptr[rhs])
-                                       ? true
-                                   : compute_t<T>(ptr[lhs]) ==
-                                           compute_t<T>(ptr[rhs])
-                                       ? (lhs < rhs)
-                                       : false;
-                        });
-                } else {
-                    partial_sort_copy(
-                        idx_itr, idx_itr + in.strides()[1], kiptr, kiptr + k,
-                        [ptr](const uint lhs, const uint rhs) -> bool {
-                            return compute_t<T>(ptr[lhs]) <
-                                   compute_t<T>(ptr[rhs]);
-                        });
-                    // Sort the top k values in each column
-                }
-            } else {
-                if (order & AF_TOPK_STABLE) {
-                    partial_sort_copy(
-                        idx_itr, idx_itr + in.strides()[1], kiptr, kiptr + k,
-                        [ptr](const uint lhs, const uint rhs) -> bool {
-                            return compute_t<T>(ptr[lhs]) >
-                                           compute_t<T>(ptr[rhs])
-                                       ? true
-                                   : compute_t<T>(ptr[lhs]) ==
-                                           compute_t<T>(ptr[rhs])
-                                       ? (lhs < rhs)
-                                       : false;
-                        });
-                } else {
-                    partial_sort_copy(
-                        idx_itr, idx_itr + in.strides()[1], kiptr, kiptr + k,
-                        [ptr](const uint lhs, const uint rhs) -> bool {
-                            return compute_t<T>(ptr[lhs]) >
-                                   compute_t<T>(ptr[rhs]);
-                        });
-                }
-            }
-
-            auto* kvptr = vptr + k * i;
-            for (int j = 0; j < k; j++) {
-                // Update the value arrays with the original values
-                kvptr[j] = ptr[kiptr[j]];
-                // Convert linear indices back to column indices
-                kiptr[j] -= i * in.strides()[1];
-            }
-        }
-    };
-
-    getQueue().enqueue(func, values, indices, in);
-
-    vals = values;
-    idxs = indices;
 }
 
 #define INSTANTIATE(T)                                                  \

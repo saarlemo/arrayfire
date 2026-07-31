@@ -9,8 +9,8 @@
 
 #include <Array.hpp>
 #include <convolve.hpp>
+#include <err_metal.hpp>
 #include <kernel/sobel.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <sobel.hpp>
@@ -31,13 +31,11 @@ std::pair<Array<To>, Array<To>> sobelDerivatives(const Array<Ti> &img,
     Array<To> dy = createEmptyArray<To>(img.dims());
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
-    if (kernel::supportsMetalSobel(type)) {
-        getQueue().enqueue(kernel::sobelMetal<Ti, To>, dx, dy, img);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::derivative<Ti, To, true>, dx, img);
-        getQueue().enqueue(kernel::derivative<Ti, To, false>, dy, img);
+    if (!kernel::supportsMetalSobel(type)) {
+        AF_ERROR("Sobel input type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::sobelMetal<Ti, To>, dx, dy, img);
 
     return std::make_pair(dx, dy);
 }

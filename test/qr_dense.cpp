@@ -49,7 +49,6 @@ TEST(QRFactorized, CPP) {
 
     array q, r, tau;
     qr(q, r, tau, input);
-
     dim4 qdims = q.dims();
     dim4 rdims = r.dims();
 

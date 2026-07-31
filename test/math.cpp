@@ -133,6 +133,10 @@ MATH_TESTS_REAL(expm1)
 MATH_TESTS_REAL(log1p)
 MATH_TESTS_REAL(erf)
 MATH_TESTS_REAL(erfc)
+MATH_TEST(half, tgamma, 2e-2, 0.05f, 0.95f)
+MATH_TESTS_FLOAT(tgamma)
+MATH_TESTS_DOUBLE(tgamma)
+MATH_TESTS_REAL(lgamma)
 #endif
 
 TEST(Math, Not) {
@@ -169,24 +173,24 @@ TEST(Math, ModulusFloat) {
     auto b     = af::constant(2, shape, af::dtype::f16);
     auto a32   = af::constant(3, shape, af::dtype::f32);
     auto b32   = af::constant(2, shape, af::dtype::f32);
-    auto a64   = af::constant(3, shape, af::dtype::f64);
-    auto b64   = af::constant(2, shape, af::dtype::f64);
-
     auto rem   = a % b;
     auto rem32 = a32 % b32;
-    auto rem64 = a64 % b64;
 
     auto neg_rem = -a % b;
     auto neg_rem32 = -a32 % b32;
-    auto neg_rem64 = -a64 % b64;
-    
+
     ASSERT_ARRAYS_EQ(af::constant(1, shape, af::dtype::f16), rem);
     ASSERT_ARRAYS_EQ(af::constant(1, shape, af::dtype::f32), rem32);
-    ASSERT_ARRAYS_EQ(af::constant(1, shape, af::dtype::f64), rem64);
 
     ASSERT_ARRAYS_EQ(af::constant(-1, shape, af::dtype::f16), neg_rem);
     ASSERT_ARRAYS_EQ(af::constant(-1, shape, af::dtype::f32), neg_rem32);
-    ASSERT_ARRAYS_EQ(af::constant(-1, shape, af::dtype::f64), neg_rem64);
 
     ASSERT_ARRAYS_EQ(rem32.as(f16), rem);
+
+    if (af::isDoubleAvailable(af::getDevice())) {
+        auto a64 = af::constant(3, shape, af::dtype::f64);
+        auto b64 = af::constant(2, shape, af::dtype::f64);
+        ASSERT_ARRAYS_EQ(af::constant(1, shape, af::dtype::f64), a64 % b64);
+        ASSERT_ARRAYS_EQ(af::constant(-1, shape, af::dtype::f64), -a64 % b64);
+    }
 }

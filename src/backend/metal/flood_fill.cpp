@@ -11,7 +11,6 @@
 
 #include <err_metal.hpp>
 #include <kernel/flood_fill.hpp>
-#include <metal_compute_flood_fill.hpp>
 
 using af::connectivity;
 
@@ -23,15 +22,10 @@ Array<T> floodFill(const Array<T>& image, const Array<uint>& seedsX,
                    const Array<uint>& seedsY, const T newValue,
                    const T lowValue, const T highValue,
                    const af::connectivity nlookup) {
-    auto out            = createValueArray(image.dims(), T(0));
-    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalFloodFill(type)) {
-        getQueue().enqueue(kernel::floodFillMetal<T>, out, image, seedsX,
-                           seedsY, newValue, lowValue, highValue);
-    } else {
-        getQueue().enqueue(kernel::floodFill<T>, out, image, seedsX, seedsY,
-                           newValue, lowValue, highValue, nlookup);
-    }
+    UNUSED(nlookup);
+    auto out = createValueArray(image.dims(), T(0));
+    getQueue().enqueueNative(kernel::floodFillMetal<T>, out, image, seedsX,
+                             seedsY, newValue, lowValue, highValue);
     return out;
 }
 

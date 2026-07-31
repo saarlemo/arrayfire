@@ -13,14 +13,11 @@
 
 #include <exampleFunction.hpp>         // cpu backend function header
 #include <kernel/exampleFunction.hpp>  // Function implementation header
-#include <metal_compute_example_function.hpp>
 
 #include <err_metal.hpp>  // error check functions and Macros
                           // specific to cpu backend
 #include <platform.hpp>
 #include <af/dim4.hpp>
-
-#include <type_traits>
 
 using af::dim4;
 
@@ -39,19 +36,13 @@ Array<T> exampleFunction(const Array<T> &a, const Array<T> &b,
     // file to know what are the different types you
     // can create.
 
-    if constexpr (std::is_same_v<T, float>) {
-        bool nonnegativeStrides = true;
-        for (int i = 0; i < 4; ++i) {
-            nonnegativeStrides &= a.strides()[i] >= 0 && b.strides()[i] >= 0;
-        }
-        if (nonnegativeStrides) {
-            getQueue().enqueue(kernel::exampleFunctionMetal, out, a, b);
-        } else {
-            getQueue().enqueue(kernel::exampleFunction<T>, out, a, b, method);
-        }
-    } else {
-        getQueue().enqueue(kernel::exampleFunction<T>, out, a, b, method);
-    }
+    UNUSED(method);
+    const af_dtype type =
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalExampleFunction(type))
+        AF_ERROR("Type is not supported by the Metal example-function kernel",
+                 AF_ERR_NOT_SUPPORTED);
+    getQueue().enqueueNative(kernel::exampleFunctionMetal<T>, out, a, b);
 
     return out;  // return the result
 }

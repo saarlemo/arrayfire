@@ -8,9 +8,9 @@
  ********************************************************/
 
 #include <Array.hpp>
+#include <err_metal.hpp>
 #include <kernel/resize.hpp>
 #include <math.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <resize.hpp>
@@ -27,23 +27,11 @@ Array<T> resize(const Array<T> &in, const dim_t odim0, const dim_t odim1,
     Array<T> out = createValueArray(odims, static_cast<T>(0));
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalResize(type)) {
-        getQueue().enqueue(kernel::resizeMetal<T>, out, in, method);
-    } else
-        switch (method) {
-            case AF_INTERP_NEAREST:
-                getQueue().enqueue(kernel::resize<T, AF_INTERP_NEAREST>, out,
-                                   in);
-                break;
-            case AF_INTERP_BILINEAR:
-                getQueue().enqueue(kernel::resize<T, AF_INTERP_BILINEAR>, out,
-                                   in);
-                break;
-            case AF_INTERP_LOWER:
-                getQueue().enqueue(kernel::resize<T, AF_INTERP_LOWER>, out, in);
-                break;
-            default: break;
-        }
+    if (!kernel::supportsMetalResize(type)) {
+        AF_ERROR("Resize type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::resizeMetal<T>, out, in, method);
     return out;
 }
 

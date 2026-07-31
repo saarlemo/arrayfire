@@ -31,6 +31,9 @@ endif()
 find_library(AF_METAL_FRAMEWORK Metal REQUIRED)
 find_library(AF_FOUNDATION_FRAMEWORK Foundation REQUIRED)
 find_library(AF_QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+find_library(AF_MPSGRAPH_FRAMEWORK MetalPerformanceShadersGraph REQUIRED)
+
+enable_language(OBJCXX)
 
 generate_product_version(af_metal_ver_res_file
   FILE_NAME "afmetal"
@@ -41,34 +44,38 @@ add_library(afmetal "")
 add_library(ArrayFire::afmetal ALIAS afmetal)
 
 set(metal_kernel_src
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/Array.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/copy.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/anisotropic_diffusion.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/Array.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/approx.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/assign.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/copy.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/convolve.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/bilateral.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/canny.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diagonal.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diff.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/dot.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/convolve.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/exampleFunction.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/flood_fill.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fast.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fftconvolve.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/gradient.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/hsv_rgb.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/histogram.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/harris.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/identity.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/range.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/random_engine.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/reduce.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/iota.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/ireduce.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/identity.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/iir.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/index.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/interp.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/tile.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/topk.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/shift.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sift.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/reorder.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/regions.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/rotate.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/resize.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/scan.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/scan_by_key.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/select.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/join.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/lookup.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/lu.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/solve.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/match_template.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/moments.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/morph.metal
@@ -77,36 +84,39 @@ set(metal_kernel_src
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/medfilt.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/nearest_neighbour.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/orb.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/qr.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/pad_borders.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/range.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/random_engine.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/reduce.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/reorder.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/regions.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/rotate.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/resize.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/scan.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/scan_by_key.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/select.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/shift.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sift.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diagonal.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diff.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/dot.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/cholesky.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/flood_fill.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fast.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fftconvolve.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/triangle.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/gradient.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/hsv_rgb.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/histogram.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/harris.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sobel.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sort_helper.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sort.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sort_by_key.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sparse.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sparse_blas.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sparse_arith.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/susan.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/tile.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/triangle.metal
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/svd.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/transpose.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/transform.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/unwrap.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/wrap.metal)
 
+set(metal_jit_kernel_src
+  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/jit.metal)
 
 file_to_string(
-  SOURCES ${metal_kernel_src}
+  SOURCES ${metal_kernel_src} ${metal_jit_kernel_src}
   VARNAME metal_kernel_files
   EXTENSION "hpp"
   OUTPUT_DIR metal_kernel_headers
@@ -116,6 +126,111 @@ file_to_string(
   NO_INCLUDE)
 
 add_dependencies(afmetal ${metal_kernel_targets})
+
+option(AF_METAL_PRECOMPILE_KERNELS
+  "Compile built-in Metal kernels to an embedded metallib at build time"
+  ON)
+set(AF_METAL_KERNEL_LIBRARY "" CACHE FILEPATH
+  "Existing metallib to embed instead of compiling ArrayFire's Metal kernels")
+
+set(af_metal_embedded_library "")
+set(af_metal_normalized_library
+  "${CMAKE_CURRENT_BINARY_DIR}/arrayfire_metal_kernels.metallib")
+
+if(AF_METAL_KERNEL_LIBRARY)
+  if(NOT EXISTS "${AF_METAL_KERNEL_LIBRARY}")
+    message(FATAL_ERROR
+      "AF_METAL_KERNEL_LIBRARY does not exist: ${AF_METAL_KERNEL_LIBRARY}")
+  endif()
+  add_custom_command(
+    OUTPUT "${af_metal_normalized_library}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${AF_METAL_KERNEL_LIBRARY}"
+      "${af_metal_normalized_library}"
+    DEPENDS "${AF_METAL_KERNEL_LIBRARY}"
+    VERBATIM)
+  set(af_metal_embedded_library "${af_metal_normalized_library}")
+elseif(AF_METAL_PRECOMPILE_KERNELS)
+  set(af_metal_find_result 1)
+  set(af_metallib_find_result 1)
+  set(af_metal_compiler_works 1)
+  find_program(AF_XCRUN_EXECUTABLE xcrun)
+  if(AF_XCRUN_EXECUTABLE)
+    execute_process(
+      COMMAND "${AF_XCRUN_EXECUTABLE}" -sdk macosx --find metal
+      RESULT_VARIABLE af_metal_find_result
+      OUTPUT_VARIABLE af_metal_compiler
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+    execute_process(
+      COMMAND "${AF_XCRUN_EXECUTABLE}" -sdk macosx --find metallib
+      RESULT_VARIABLE af_metallib_find_result
+      OUTPUT_VARIABLE af_metallib_linker
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      ERROR_QUIET)
+  endif()
+
+  if(af_metal_find_result EQUAL 0 AND
+     af_metallib_find_result EQUAL 0)
+    execute_process(
+      COMMAND "${af_metal_compiler}" --version
+      RESULT_VARIABLE af_metal_compiler_works
+      OUTPUT_QUIET
+      ERROR_QUIET)
+  endif()
+
+  if(af_metal_compiler_works EQUAL 0)
+    set(af_metal_combined_source
+      "${CMAKE_CURRENT_BINARY_DIR}/arrayfire_metal_kernels.metal")
+    set(af_metal_air
+      "${CMAKE_CURRENT_BINARY_DIR}/arrayfire_metal_kernels.air")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+      ${metal_kernel_src})
+    file(WRITE "${af_metal_combined_source}" "")
+    foreach(af_metal_source IN LISTS metal_kernel_src)
+      file(READ "${af_metal_source}" af_metal_source_contents)
+      file(APPEND "${af_metal_combined_source}"
+        "${af_metal_source_contents}\n")
+    endforeach()
+
+    set(af_metal_deployment_flag "")
+    if(CMAKE_OSX_DEPLOYMENT_TARGET)
+      set(af_metal_deployment_flag
+        "-mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+    endif()
+    add_custom_command(
+      OUTPUT "${af_metal_normalized_library}"
+      COMMAND "${af_metal_compiler}"
+        -c
+        ${af_metal_deployment_flag}
+        "${af_metal_combined_source}"
+        -o "${af_metal_air}"
+      COMMAND "${af_metallib_linker}"
+        "${af_metal_air}"
+        -o "${af_metal_normalized_library}"
+      DEPENDS "${af_metal_combined_source}" ${metal_kernel_src}
+      COMMENT "Compiling ArrayFire Metal kernels to a metallib"
+      VERBATIM)
+    set(af_metal_embedded_library "${af_metal_normalized_library}")
+  else()
+    message(STATUS
+      "Metal compiler tools unavailable; built-in kernels will use runtime source compilation")
+  endif()
+endif()
+
+if(af_metal_embedded_library)
+  file_to_string(
+    SOURCES "${af_metal_embedded_library}"
+    VARNAME metal_kernel_library
+    EXTENSION "hpp"
+    OUTPUT_DIR metal_kernel_library
+    TARGETS metal_kernel_library_target
+    NAMESPACE "arrayfire metal kernel"
+    BINARY TRUE
+    NO_INCLUDE)
+  add_dependencies(afmetal ${metal_kernel_library_target})
+  target_compile_definitions(afmetal PRIVATE AF_METAL_PRECOMPILED_KERNELS)
+endif()
 
 # Metal backend needs to use MKL LP64 interface
 set(MKL_INTERFACE_INTEGER_SIZE 4)
@@ -138,11 +253,8 @@ target_sources(afmetal
     binary.hpp
     bilateral.cpp
     bilateral.hpp
-    metal_compute_bilateral.hpp
     blas.cpp
     blas.hpp
-    metal_compute_dot.hpp
-    metal_compute_example_function.hpp
     canny.cpp
     canny.hpp
     cast.hpp
@@ -153,6 +265,7 @@ target_sources(afmetal
     convolve.hpp
     copy.cpp
     copy.hpp
+    compile_module.cpp
     device_manager.cpp
     device_manager.hpp
     diagonal.cpp
@@ -168,6 +281,10 @@ target_sources(afmetal
     fast.hpp
     fft.cpp
     fft.hpp
+    metal_fft.mm
+    metal_fft.hpp
+    metal_inverse.mm
+    metal_inverse.hpp
     fftconvolve.cpp
     fftconvolve.hpp
     flood_fill.hpp
@@ -180,33 +297,6 @@ target_sources(afmetal
     hist_graphics.hpp
     histogram.cpp
     histogram.hpp
-    metal_compute_histogram.hpp
-    metal_compute_harris.hpp
-    metal_compute_anisotropic_diffusion.hpp
-    metal_compute_array.hpp
-    metal_compute_approx.hpp
-    metal_compute_assign.hpp
-    metal_compute_canny.hpp
-    metal_compute_convolve.hpp
-    metal_compute_flood_fill.hpp
-    metal_compute_fast.hpp
-    metal_compute_fftconvolve.hpp
-    metal_compute_morph.hpp
-    metal_compute_mean.hpp
-    metal_compute_nearest_neighbour.hpp
-    metal_compute_orb.hpp
-    metal_compute_regions.hpp
-    metal_compute_random.hpp
-    metal_compute_reduce.hpp
-    metal_compute_transform.hpp
-    metal_compute_sort.hpp
-    metal_compute_sort_by_key.hpp
-    metal_compute_sparse.hpp
-    metal_compute_sparse_arith.hpp
-    metal_compute_susan.hpp
-    metal_compute_scan.hpp
-    metal_compute_scan_by_key.hpp
-    metal_compute_sift.hpp
     homography.cpp
     homography.hpp
     hsv_rgb.cpp
@@ -215,9 +305,6 @@ target_sources(afmetal
     identity.hpp
     iir.cpp
     iir.hpp
-    metal_compute_iir.hpp
-    metal_compute_ireduce.hpp
-    metal_compute_index.hpp
     image.cpp
     image.hpp
     index.cpp
@@ -228,6 +315,8 @@ target_sources(afmetal
     iota.hpp
     ireduce.cpp
     ireduce.hpp
+    jit.cpp
+    jit.hpp
     join.cpp
     join.hpp
     lapack_helper.hpp
@@ -236,26 +325,25 @@ target_sources(afmetal
     lookup.hpp
     lu.cpp
     lu.hpp
-    metal_compute_lu.hpp
     match_template.cpp
     match_template.hpp
-    metal_compute_match_template.hpp
     math.cpp
     math.hpp
     mean.cpp
     mean.hpp
-    metal_device.cpp
-    metal_device.hpp
     meanshift.cpp
     meanshift.hpp
-    metal_compute_meanshift.hpp
     medfilt.cpp
     medfilt.hpp
-    metal_compute_medfilt.hpp
-    metal_compute.cpp
-    metal_compute.hpp
+    kernel/dispatch_algorithm.cpp
+    kernel/dispatch_common.cpp
+    kernel/dispatch_data.cpp
+    kernel/dispatch_image.cpp
+    kernel/metal_runtime.cpp
+    Kernel.hpp
     memory.cpp
     memory.hpp
+    Module.hpp
     moments.cpp
     moments.hpp
     morph.cpp
@@ -264,9 +352,9 @@ target_sources(afmetal
     nearest_neighbour.hpp
     orb.cpp
     orb.hpp
-    ParamIterator.hpp
     platform.cpp
     platform.hpp
+    Param.hpp
     plot.cpp
     plot.hpp
     print.hpp
@@ -288,7 +376,6 @@ target_sources(afmetal
     reshape.cpp
     rotate.cpp
     rotate.hpp
-    metal_compute_rotate.hpp
     scan.cpp
     scan.hpp
     scan_by_key.cpp
@@ -347,6 +434,20 @@ target_sources(afmetal
     wrap.hpp
   )
 
+set_source_files_properties(metal_fft.mm metal_inverse.mm PROPERTIES
+  COMPILE_FLAGS "-fobjc-arc")
+
+target_sources(afmetal
+  PRIVATE
+    jit/BufferNode.hpp
+    jit/ShiftNode.hpp
+    jit/kernel_generators.hpp
+    kernel/KParam.hpp
+    kernel/cholesky.hpp
+    kernel/dispatch_common.hpp
+    kernel/metal_runtime.hpp
+  )
+
 # Metal backend kernel files
 target_sources(afmetal
   PRIVATE
@@ -358,6 +459,7 @@ target_sources(afmetal
     kernel/canny.hpp
     kernel/convolve.hpp
     kernel/copy.hpp
+    kernel/cholesky.hpp
     kernel/diagonal.hpp
     kernel/diff.hpp
     kernel/dot.hpp
@@ -372,7 +474,6 @@ target_sources(afmetal
     kernel/identity.hpp
     kernel/iir.hpp
     kernel/index.hpp
-    kernel/interp.hpp
     kernel/iota.hpp
     kernel/ireduce.hpp
     kernel/join.hpp
@@ -406,32 +507,17 @@ target_sources(afmetal
     kernel/sort_by_key.hpp
     kernel/sort_helper.hpp
     kernel/sparse.hpp
+    kernel/sparse_blas.hpp
     kernel/sparse_arith.hpp
     kernel/susan.hpp
     kernel/tile.hpp
+    kernel/topk.hpp
     kernel/transform.hpp
     kernel/transpose.hpp
     kernel/triangle.hpp
     kernel/unwrap.hpp
     kernel/wrap.hpp
   )
-
-if (AF_WITH_CPUID)
-  target_compile_definitions(afmetal PRIVATE -DAF_WITH_CPUID)
-endif(AF_WITH_CPUID)
-
-af_dep_check_and_populate(${threads_prefix}
-  URI https://github.com/arrayfire/threads.git
-  REF 4d4a4f0384d1ac2f25b2c4fc1d57b9e25f4d6818
-)
-
-target_sources(afmetal
-  PRIVATE
-    ${${threads_prefix}_SOURCE_DIR}/include/threads/async_queue.hpp
-    ${${threads_prefix}_SOURCE_DIR}/include/threads/event.hpp
-  )
-
-include("${CMAKE_CURRENT_SOURCE_DIR}/kernel/sort_by_key/CMakeLists.txt")
 
 target_include_directories(afmetal
   PUBLIC
@@ -441,8 +527,7 @@ target_include_directories(afmetal
   PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}
-    ${METALCPP_INCLUDE_DIR}
-    ${${threads_prefix}_SOURCE_DIR}/include)
+    ${METALCPP_INCLUDE_DIR})
 
 target_include_directories(afmetal
   SYSTEM PRIVATE
@@ -450,7 +535,6 @@ target_include_directories(afmetal
 
 target_compile_definitions(afmetal
   PRIVATE
-    AF_CPU
     AF_METAL
     METALCPP_SYMBOL_VISIBILITY_HIDDEN
   )
@@ -464,11 +548,11 @@ target_link_libraries(afmetal
     c_api_interface
     cpp_api_interface
     afcommon_interface
-    metal_sort_by_key
     Threads::Threads
     ${AF_METAL_FRAMEWORK}
     ${AF_FOUNDATION_FRAMEWORK}
     ${AF_QUARTZCORE_FRAMEWORK}
+    ${AF_MPSGRAPH_FRAMEWORK}
   )
 if(BUILD_WITH_MKL)
   target_compile_definitions(afmetal PRIVATE USE_MKL)

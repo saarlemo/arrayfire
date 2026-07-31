@@ -9,46 +9,32 @@
 
 #include <match_template.hpp>
 
+#include <err_metal.hpp>
 #include <kernel/match_template.hpp>
-#include <metal_compute_match_template.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
-
-#include <functional>
 
 using af::dim4;
 
 namespace arrayfire {
 namespace metal {
 
-template<typename To, typename Ti>
-using matchFunc = std::function<void(Param<To>, CParam<Ti>, CParam<Ti>)>;
-
 template<typename inType, typename outType>
 Array<outType> match_template(const Array<inType> &sImg,
                               const Array<inType> &tImg,
                               const af::matchType mType) {
-    static const matchFunc<outType, inType> funcs[6] = {
-        kernel::matchTemplate<outType, inType, AF_SAD>,
-        kernel::matchTemplate<outType, inType, AF_ZSAD>,
-        kernel::matchTemplate<outType, inType, AF_LSAD>,
-        kernel::matchTemplate<outType, inType, AF_SSD>,
-        kernel::matchTemplate<outType, inType, AF_ZSSD>,
-        kernel::matchTemplate<outType, inType, AF_LSSD>,
-    };
-
     Array<outType> out = createEmptyArray<outType>(sImg.dims());
     const af_dtype inputType =
         static_cast<af_dtype>(af::dtype_traits<inType>::af_type);
     const af_dtype outputType =
         static_cast<af_dtype>(af::dtype_traits<outType>::af_type);
-    if (kernel::supportsMetalMatchTemplate(inputType, outputType)) {
-        getQueue().enqueue(kernel::matchTemplateMetal<inType, outType>, out,
-                           sImg, tImg, mType);
-    } else {
-        getQueue().enqueue(funcs[static_cast<int>(mType)], out, sImg, tImg);
+    if (!kernel::supportsMetalMatchTemplate(inputType, outputType)) {
+        AF_ERROR("Template-matching type combination is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::matchTemplateMetal<inType, outType>, out,
+                             sImg, tImg, mType);
     return out;
 }
 

@@ -39,6 +39,22 @@ using std::vector;
 
 const size_t step_bytes = 1024;
 
+TEST(Memory, PinnedAllocation) {
+    constexpr dim_t bytes = 4 * sizeof(float);
+    void *ptr             = nullptr;
+
+    ASSERT_SUCCESS(af_alloc_pinned(&ptr, bytes));
+    ASSERT_NE(ptr, nullptr);
+
+    auto *values = static_cast<float *>(ptr);
+    for (int i = 0; i < 4; ++i) { values[i] = static_cast<float>(i + 1); }
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_EQ(values[i], static_cast<float>(i + 1));
+    }
+
+    ASSERT_SUCCESS(af_free_pinned(ptr));
+}
+
 TEST(Memory, Scope) {
     size_t alloc_bytes, alloc_buffers;
     size_t lock_bytes, lock_buffers;
@@ -581,7 +597,9 @@ TEST(Memory, unlock) {
     // arr1 gets released by end of the following code block
     {
         array a(arr);
+        ASSERT_FALSE(a.isLocked());
         a.lock();
+        ASSERT_TRUE(a.isLocked());
 
         // No new memory should be allocated
         deviceMemInfo(&alloc_bytes, &alloc_buffers, &lock_bytes, &lock_buffers);
@@ -592,6 +610,7 @@ TEST(Memory, unlock) {
         ASSERT_EQ(lock_bytes, step_bytes);
 
         a.unlock();
+        ASSERT_FALSE(a.isLocked());
     }
 
     // Making sure all unlocked buffers are freed

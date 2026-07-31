@@ -9,100 +9,73 @@
 
 #pragma once
 #include <Param.hpp>
-#include <common/Binary.hpp>
-#include <common/half.hpp>
-#include <algorithm>
-#include <cmath>
+#include <af/dim4.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalIReduce(af_dtype type) noexcept;
+void launchMetalIReduceAll(BufferParam output, size_t outputBytes,
+                           BufferParam locations, size_t locationsBytes,
+                           BufferParam input, size_t inputBytes,
+                           const af::dim4& inputDims,
+                           const af::dim4& inputStrides, bool isMax,
+                           af_dtype type);
+void launchMetalIReduce(
+    BufferParam output, size_t outputBytes, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam locations, size_t locationsBytes,
+    BufferParam input, size_t inputBytes, const af::dim4& inputDims,
+    const af::dim4& inputStrides, int dimension, bool isMax, af_dtype type);
+void launchMetalRReduce(
+    BufferParam output, size_t outputBytes, const af::dim4& outputDims,
+    const af::dim4& outputStrides, BufferParam locations, size_t locationsBytes,
+    BufferParam input, size_t inputBytes, const af::dim4& inputDims,
+    const af::dim4& inputStrides, int dimension, BufferParam rlen,
+    size_t rlenBytes, const af::dim4& rlenDims, const af::dim4& rlenStrides,
+    bool isMax, af_dtype type);
+
 template<typename T>
-double cabs(const T in) {
-    return (double)in;
+void ireduceMetalTyped(Param<T> output, Param<uint> locations,
+                       CParam<T> input, const int dimension,
+                       const bool isMax) {
+    launchMetalIReduce(
+        output.bufferParam(), static_cast<size_t>(output.dims().elements()) *
+                                   sizeof(T),
+        output.dims(), output.strides(), locations.bufferParam(),
+        static_cast<size_t>(locations.dims().elements()) * sizeof(uint),
+        input.bufferParam(), sizeof(T), input.dims(), input.strides(), dimension,
+        isMax, static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
-static double cabs(const char in) { return (double)(in > 0); }
-static double cabs(const cfloat &in) { return (double)abs(in); }
-static double cabs(const cdouble &in) { return (double)abs(in); }
-
-template<af_op_t op, typename T>
-struct MinMaxOp {
-    T m_val;
-    uint m_idx;
-    MinMaxOp(T val, uint idx) : m_val(val), m_idx(idx) {
-        using arrayfire::metal::is_nan;
-        if (is_nan(val)) { m_val = common::Binary<T, op>::init(); }
-    }
-
-    void operator()(T val, uint idx) {
-        if ((cabs(val) < cabs(m_val) ||
-             (cabs(val) == cabs(m_val) && idx > m_idx))) {
-            m_val = val;
-            m_idx = idx;
-        }
-    }
-};
 
 template<typename T>
-struct MinMaxOp<af_max_t, T> {
-    T m_val;
-    uint m_idx;
-    MinMaxOp(T val, uint idx) : m_val(val), m_idx(idx) {
-        using arrayfire::metal::is_nan;
-        if (is_nan(val)) { m_val = common::Binary<T, af_max_t>::init(); }
-    }
-
-    void operator()(T val, uint idx) {
-        if ((cabs(val) > cabs(m_val) ||
-             (cabs(val) == cabs(m_val) && idx <= m_idx))) {
-            m_val = val;
-            m_idx = idx;
-        }
-    }
-};
-
-template<af_op_t op, typename T, int D>
-struct ireduce_dim {
-    void operator()(Param<T> output, Param<uint> locParam,
-                    const dim_t outOffset, CParam<T> input,
-                    const dim_t inOffset, const int dim, CParam<uint> rlen) {
-        const af::dim4 odims    = output.dims();
-        const af::dim4 ostrides = output.strides();
-        const af::dim4 istrides = input.strides();
-        const int D1            = D - 1;
-        for (dim_t i = 0; i < odims[D1]; i++) {
-            ireduce_dim<op, T, D1>()(output, locParam,
-                                     outOffset + i * ostrides[D1], input,
-                                     inOffset + i * istrides[D1], dim, rlen);
-        }
-    }
-};
+void ireduceAllMetalTyped(Param<T> output, Param<uint> locations,
+                          CParam<T> input, const bool isMax) {
+    launchMetalIReduceAll(
+        output.bufferParam(), static_cast<size_t>(output.dims().elements()) *
+                                   sizeof(T),
+        locations.bufferParam(),
+        static_cast<size_t>(locations.dims().elements()) * sizeof(uint),
+        input.bufferParam(), sizeof(T), input.dims(), input.strides(), isMax,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
 
 template<af_op_t op, typename T>
-struct ireduce_dim<op, T, 0> {
-    void operator()(Param<T> output, Param<uint> locParam,
-                    const dim_t outOffset, CParam<T> input,
-                    const dim_t inOffset, const int dim, CParam<uint> rlen) {
-        const af::dim4 idims    = input.dims();
-        const af::dim4 istrides = input.strides();
-
-        T const *const in   = input.get();
-        T *out              = output.get();
-        uint *loc           = locParam.get();
-        const uint *rlenptr = (rlen.get()) ? rlen.get() + outOffset : nullptr;
-
-        dim_t stride = istrides[dim];
-        MinMaxOp<op, T> Op(in[inOffset], 0);
-        int lim =
-            (rlenptr) ? std::min(idims[dim], (dim_t)*rlenptr) : idims[dim];
-        for (dim_t i = 0; i < lim; i++) { Op(in[inOffset + i * stride], i); }
-
-        out[outOffset] = Op.m_val;
-        loc[outOffset] = Op.m_idx;
-    }
-};
-
+void rreduceMetalTyped(Param<T> output, Param<uint> locations,
+                       CParam<T> input, const int dimension,
+                       CParam<uint> rlen) {
+    launchMetalRReduce(
+        output.bufferParam(), static_cast<size_t>(output.dims().elements()) *
+                                   sizeof(T),
+        output.dims(), output.strides(), locations.bufferParam(),
+        static_cast<size_t>(locations.dims().elements()) * sizeof(uint),
+        input.bufferParam(), sizeof(T), input.dims(), input.strides(), dimension,
+        rlen.bufferParam(), static_cast<size_t>(rlen.dims().elements()) *
+                                 sizeof(uint),
+        rlen.dims(), rlen.strides(), op == af_max_t,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

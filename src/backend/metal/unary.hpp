@@ -1,5 +1,5 @@
 /*******************************************************
- * Copyright (c) 2014, ArrayFire
+ * Copyright (c) 2026, ArrayFire
  * All rights reserved.
  *
  * This file is distributed under 3-clause BSD license.
@@ -8,116 +8,91 @@
  ********************************************************/
 
 #pragma once
+
 #include <Array.hpp>
-#include <err_metal.hpp>
-#include <jit/UnaryNode.hpp>
+#include <common/jit/UnaryNode.hpp>
 #include <optypes.hpp>
-#include <cmath>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 
-template<typename T>
-T sigmoid(T in) {
-    return (1.0) / (1 + std::exp(-in));
-}
+template<af_op_t op>
+const char *unaryName();
 
-template<typename T>
-T rsqrt(T in) {
-    return pow(in, -0.5);
-}
+#define METAL_UNARY_OP(OP, NAME)             \
+    template<>                               \
+    inline const char *unaryName<OP>() {     \
+        return NAME;                         \
+    }
 
-#define UNARY_OP_FN(op, fn)                                       \
-    template<typename T>                                          \
-    struct UnOp<T, T, af_##op##_t> {                              \
-        void eval(jit::array<compute_t<T>> &out,                  \
-                  const jit::array<compute_t<T>> &in, int lim) {  \
-            for (int i = 0; i < lim; i++) { out[i] = fn(in[i]); } \
-        }                                                         \
-    };
+METAL_UNARY_OP(af_sin_t, "af_jit_sin")
+METAL_UNARY_OP(af_cos_t, "af_jit_cos")
+METAL_UNARY_OP(af_tan_t, "af_jit_tan")
+METAL_UNARY_OP(af_asin_t, "af_jit_asin")
+METAL_UNARY_OP(af_acos_t, "af_jit_acos")
+METAL_UNARY_OP(af_atan_t, "af_jit_atan")
+METAL_UNARY_OP(af_sinh_t, "af_jit_sinh")
+METAL_UNARY_OP(af_cosh_t, "af_jit_cosh")
+METAL_UNARY_OP(af_tanh_t, "af_jit_tanh")
+METAL_UNARY_OP(af_asinh_t, "af_jit_asinh")
+METAL_UNARY_OP(af_acosh_t, "af_jit_acosh")
+METAL_UNARY_OP(af_atanh_t, "af_jit_atanh")
+METAL_UNARY_OP(af_exp_t, "af_jit_exp")
+METAL_UNARY_OP(af_sigmoid_t, "af_jit_sigmoid")
+METAL_UNARY_OP(af_expm1_t, "af_jit_expm1")
+METAL_UNARY_OP(af_erf_t, "af_jit_erf")
+METAL_UNARY_OP(af_erfc_t, "af_jit_erfc")
+METAL_UNARY_OP(af_tgamma_t, "af_jit_tgamma")
+METAL_UNARY_OP(af_lgamma_t, "af_jit_lgamma")
+METAL_UNARY_OP(af_log_t, "af_jit_log")
+METAL_UNARY_OP(af_log1p_t, "af_jit_log1p")
+METAL_UNARY_OP(af_log10_t, "af_jit_log10")
+METAL_UNARY_OP(af_log2_t, "af_jit_log2")
+METAL_UNARY_OP(af_sqrt_t, "af_jit_sqrt")
+METAL_UNARY_OP(af_rsqrt_t, "af_jit_rsqrt")
+METAL_UNARY_OP(af_cbrt_t, "af_jit_cbrt")
+METAL_UNARY_OP(af_trunc_t, "af_jit_trunc")
+METAL_UNARY_OP(af_round_t, "af_jit_round")
+METAL_UNARY_OP(af_signbit_t, "af_jit_signbit")
+METAL_UNARY_OP(af_ceil_t, "af_jit_ceil")
+METAL_UNARY_OP(af_floor_t, "af_jit_floor")
+METAL_UNARY_OP(af_isinf_t, "af_jit_isinf")
+METAL_UNARY_OP(af_isnan_t, "af_jit_isnan")
+METAL_UNARY_OP(af_iszero_t, "af_jit_iszero")
+METAL_UNARY_OP(af_noop_t, "af_jit_noop")
+METAL_UNARY_OP(af_bitnot_t, "af_jit_bitnot")
 
-#define UNARY_OP(op) UNARY_OP_FN(op, std::op)
-
-UNARY_OP(sin)
-UNARY_OP(cos)
-UNARY_OP(tan)
-
-UNARY_OP(asin)
-UNARY_OP(acos)
-UNARY_OP(atan)
-
-UNARY_OP(sinh)
-UNARY_OP(cosh)
-UNARY_OP(tanh)
-
-UNARY_OP(asinh)
-UNARY_OP(acosh)
-UNARY_OP(atanh)
-
-UNARY_OP(round)
-UNARY_OP(trunc)
-UNARY_OP(signbit)
-UNARY_OP(floor)
-UNARY_OP(ceil)
-
-UNARY_OP(exp)
-UNARY_OP_FN(sigmoid, sigmoid)
-UNARY_OP(expm1)
-UNARY_OP(erf)
-UNARY_OP(erfc)
-
-UNARY_OP(log)
-UNARY_OP(log10)
-UNARY_OP(log1p)
-UNARY_OP(log2)
-
-UNARY_OP(sqrt)
-UNARY_OP_FN(rsqrt, rsqrt)
-UNARY_OP(cbrt)
-
-UNARY_OP(tgamma)
-UNARY_OP(lgamma)
-UNARY_OP_FN(noop, )  /// Empty second parameter so it does nothing
-
-UNARY_OP_FN(bitnot, ~)
-
-#undef UNARY_OP
-#undef UNARY_OP_FN
+#undef METAL_UNARY_OP
 
 template<typename T, af_op_t op>
-Array<T> unaryOp(const Array<T> &in, dim4 outDim = dim4(-1, -1, -1, -1)) {
-    using UnaryNode = jit::UnaryNode<T, T, op>;
-
-    common::Node_ptr in_node = in.getNode();
-    auto node                = std::make_shared<UnaryNode>(in_node);
-
-    if (outDim == dim4(-1, -1, -1, -1)) { outDim = in.dims(); }
-    return createNodeArray<T>(outDim, move(node));
-}
-
-#define iszero(a) ((a) == 0)
-
-#define CHECK_FN(name, op)                                                   \
-    template<typename T>                                                     \
-    struct UnOp<char, T, af_##name##_t> {                                    \
-        void eval(jit::array<char> &out, const jit::array<compute_t<T>> &in, \
-                  int lim) {                                                 \
-            for (int i = 0; i < lim; i++) { out[i] = op(in[i]); }            \
-        }                                                                    \
+Array<T> unaryOp(const Array<T> &in,
+                 af::dim4 outDims = af::dim4(-1, -1, -1, -1)) {
+    auto createUnary = [](std::array<common::Node_ptr, 1> &operands) {
+        return common::Node_ptr(new common::UnaryNode(
+            static_cast<af::dtype>(af::dtype_traits<T>::af_type),
+            unaryName<op>(), operands[0], op));
     };
 
-CHECK_FN(isinf, std::isinf)
-CHECK_FN(isnan, std::isnan)
-CHECK_FN(iszero, iszero)
-#undef iszero
+    if (outDims == af::dim4(-1, -1, -1, -1)) outDims = in.dims();
+    common::Node_ptr node =
+        common::createNaryNode<T, 1>(outDims, createUnary, {&in});
+    return createNodeArray<T>(outDims, std::move(node));
+}
 
 template<typename T, af_op_t op>
-Array<char> checkOp(const Array<T> &in, dim4 outDim = dim4(-1, -1, -1, -1)) {
-    common::Node_ptr in_node = in.getNode();
-    auto node = std::make_shared<jit::UnaryNode<char, T, op>>(in_node);
+Array<char> checkOp(const Array<T> &in,
+                    af::dim4 outDims = af::dim4(-1, -1, -1, -1)) {
+    auto createUnary = [](std::array<common::Node_ptr, 1> &operands) {
+        return common::Node_ptr(new common::UnaryNode(
+            static_cast<af::dtype>(af::dtype_traits<char>::af_type),
+            unaryName<op>(), operands[0], op));
+    };
 
-    if (outDim == dim4(-1, -1, -1, -1)) { outDim = in.dims(); }
-    return createNodeArray<char>(outDim, move(node));
+    if (outDims == af::dim4(-1, -1, -1, -1)) outDims = in.dims();
+    common::Node_ptr node =
+        common::createNaryNode<T, 1>(outDims, createUnary, {&in});
+    return createNodeArray<char>(outDims, std::move(node));
 }
 
 }  // namespace metal

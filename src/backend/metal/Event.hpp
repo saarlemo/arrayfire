@@ -8,42 +8,71 @@
  ********************************************************/
 #pragma once
 
+#include <Metal.hpp>
 #include <common/EventBase.hpp>
 #include <queue.hpp>
 #include <af/event.h>
 
+#include <cstdint>
 #include <type_traits>
 
 namespace arrayfire {
 namespace metal {
 
-class MetalHostEventPolicy {
+struct MetalEventData {
+    MTL::SharedEvent *event{nullptr};
+    std::uint64_t value{0};
+
+    MetalEventData() noexcept = default;
+    MetalEventData(int) noexcept {}
+    MetalEventData(const MetalEventData &)            = delete;
+    MetalEventData &operator=(const MetalEventData &) = delete;
+
+    MetalEventData(MetalEventData &&other) noexcept
+        : event(other.event), value(other.value) {
+        other.event = nullptr;
+        other.value = 0;
+    }
+
+    MetalEventData &operator=(MetalEventData &&other) noexcept {
+        if (this != &other) {
+            if (event) { event->release(); }
+            event       = other.event;
+            value       = other.value;
+            other.event = nullptr;
+            other.value = 0;
+        }
+        return *this;
+    }
+
+    MetalEventData &operator=(int) noexcept {
+        if (event) { event->release(); }
+        event = nullptr;
+        value = 0;
+        return *this;
+    }
+
+    explicit operator bool() const noexcept { return event != nullptr; }
+};
+
+class MetalEventPolicy {
    public:
-    using EventType = queue_event;
+    using EventType = MetalEventData;
     using QueueType = std::add_lvalue_reference<queue>::type;
     using ErrorType = int;
 
-    static int createAndMarkEvent(queue_event *e) noexcept {
-        return e->create();
-    }
+    static int createAndMarkEvent(MetalEventData *e) noexcept;
 
-    static int markEvent(queue_event *e, metal::queue &stream) noexcept {
-        return e->mark(stream);
-    }
+    static int markEvent(MetalEventData *e, metal::queue &stream) noexcept;
 
-    static int waitForEvent(queue_event *e, metal::queue &stream) noexcept {
-        return e->wait(stream);
-    }
+    static int waitForEvent(MetalEventData *e, metal::queue &stream) noexcept;
 
-    static int syncForEvent(queue_event *e) noexcept {
-        e->sync();
-        return 0;
-    }
+    static int syncForEvent(MetalEventData *e) noexcept;
 
-    static int destroyEvent(queue_event *e) noexcept { return 0; }
+    static int destroyEvent(MetalEventData *e) noexcept;
 };
 
-using Event = common::EventBase<MetalHostEventPolicy>;
+using Event = common::EventBase<MetalEventPolicy>;
 
 /// \brief Creates a new event and marks it in the queue
 Event makeEvent(metal::queue &queue);

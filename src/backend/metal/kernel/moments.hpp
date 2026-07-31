@@ -9,52 +9,35 @@
 
 #pragma once
 #include <Param.hpp>
-#include <math.hpp>
-#include <utility.hpp>
+#include <af/traits.hpp>
 #include <af/defines.h>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalMoments(af_dtype type) noexcept;
+
+void launchMetalMoments(BufferParam output, size_t outputBytes,
+                        const af::dim4& outputStrides, BufferParam input,
+                        size_t inputBytes, const af::dim4& inputDims,
+                        const af::dim4& inputStrides, af_moment_type moment,
+                        af_dtype type);
+
 template<typename T>
-void moments(Param<float> output, CParam<T> input, af_moment_type moment) {
-    T const *const in       = input.get();
-    af::dim4 const idims    = input.dims();
-    af::dim4 const istrides = input.strides();
-    af::dim4 const ostrides = output.strides();
-
-    float *out = output.get();
-
-    for (dim_t w = 0; w < idims[3]; w++) {
-        for (dim_t z = 0; z < idims[2]; z++) {
-            dim_t out_off = w * ostrides[3] + z * ostrides[2];
-            for (dim_t y = 0; y < idims[1]; y++) {
-                dim_t in_off =
-                    y * istrides[1] + z * istrides[2] + w * istrides[3];
-                for (dim_t x = 0; x < idims[0]; x++) {
-                    dim_t m_off = 0;
-                    float val   = in[in_off + x];
-                    if ((moment & AF_MOMENT_M00) > 0) {
-                        out[out_off + m_off] += val;
-                        m_off++;
-                    }
-                    if ((moment & AF_MOMENT_M01) > 0) {
-                        out[out_off + m_off] += x * val;
-                        m_off++;
-                    }
-                    if ((moment & AF_MOMENT_M10) > 0) {
-                        out[out_off + m_off] += y * val;
-                        m_off++;
-                    }
-                    if ((moment & AF_MOMENT_M11) > 0) {
-                        out[out_off + m_off] += x * y * val;
-                        m_off++;
-                    }
-                }
-            }
-        }
-    }
+void momentsMetal(Param<float> output, CParam<T> input,
+                  const af_moment_type moment) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i)
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
+    launchMetalMoments(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(float),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.dims(),
+        input.strides(), moment,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

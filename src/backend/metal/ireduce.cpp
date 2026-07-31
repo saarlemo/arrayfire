@@ -8,10 +8,10 @@
  ********************************************************/
 #include <ireduce.hpp>
 #include <kernel/ireduce.hpp>
-#include <metal_compute_ireduce.hpp>
 
 #include <Array.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
@@ -26,74 +26,47 @@ namespace arrayfire {
 namespace metal {
 
 template<af_op_t op, typename T>
-using ireduce_dim_func =
-    std::function<void(Param<T>, Param<uint>, const dim_t, CParam<T>,
-                       const dim_t, const int, CParam<uint>)>;
-
-template<af_op_t op, typename T>
 void ireduce(Array<T> &out, Array<uint> &loc, const Array<T> &in,
              const int dim) {
-    dim4 odims       = in.dims();
-    odims[dim]       = 1;
-    Array<uint> rlen = createEmptyArray<uint>(af::dim4(0));
-    if constexpr (std::is_same<T, float>::value) {
-        getQueue().enqueue(kernel::ireduceMetal, out, loc, in, dim,
-                           op == af_max_t);
-        return;
+    const af_dtype type =
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalIReduce(type)) {
+        AF_ERROR("Input type is not supported by the Metal indexed reduction",
+                 AF_ERR_NOT_SUPPORTED);
     }
-    static const ireduce_dim_func<op, T> ireduce_funcs[] = {
-        kernel::ireduce_dim<op, T, 1>(), kernel::ireduce_dim<op, T, 2>(),
-        kernel::ireduce_dim<op, T, 3>(), kernel::ireduce_dim<op, T, 4>()};
-
-    getQueue().enqueue(ireduce_funcs[in.ndims() - 1], out, loc, 0, in, 0, dim,
-                       rlen);
+    getQueue().enqueueNative(kernel::ireduceMetalTyped<T>, out, loc, in, dim,
+                              op == af_max_t);
 }
 
 template<af_op_t op, typename T>
 void rreduce(Array<T> &out, Array<uint> &loc, const Array<T> &in, const int dim,
              const Array<uint> &rlen) {
-    dim4 odims = in.dims();
-    odims[dim] = 1;
-
-    static const ireduce_dim_func<op, T> ireduce_funcs[] = {
-        kernel::ireduce_dim<op, T, 1>(), kernel::ireduce_dim<op, T, 2>(),
-        kernel::ireduce_dim<op, T, 3>(), kernel::ireduce_dim<op, T, 4>()};
-
-    getQueue().enqueue(ireduce_funcs[in.ndims() - 1], out, loc, 0, in, 0, dim,
-                       rlen);
+    const af_dtype type =
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalIReduce(type)) {
+        AF_ERROR("Input type is not supported by the Metal ragged indexed reduction",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::rreduceMetalTyped<op, T>, out, loc, in,
+                              dim, rlen);
 }
 
 template<af_op_t op, typename T>
 T ireduce_all(unsigned *loc, const Array<T> &in) {
-    in.eval();
-    getQueue().sync();
-
-    af::dim4 dims    = in.dims();
-    af::dim4 strides = in.strides();
-    const T *inPtr   = in.get();
-    dim_t idx        = 0;
-
-    kernel::MinMaxOp<op, T> Op(inPtr[0], 0);
-
-    for (dim_t l = 0; l < dims[3]; l++) {
-        dim_t off3 = l * strides[3];
-
-        for (dim_t k = 0; k < dims[2]; k++) {
-            dim_t off2 = k * strides[2];
-
-            for (dim_t j = 0; j < dims[1]; j++) {
-                dim_t off1 = j * strides[1];
-
-                for (dim_t i = 0; i < dims[0]; i++) {
-                    dim_t d_idx = i + off1 + off2 + off3;
-                    Op(inPtr[d_idx], idx++);
-                }
-            }
-        }
+    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalIReduce(type)) {
+        AF_ERROR("Input type is not supported by the Metal all-indexed reduction",
+                 AF_ERR_NOT_SUPPORTED);
     }
 
-    *loc = Op.m_idx;
-    return Op.m_val;
+    Array<T> value = createEmptyArray<T>(dim4(1));
+    Array<uint> index = createEmptyArray<uint>(dim4(1));
+    getQueue().enqueueNative(kernel::ireduceAllMetalTyped<T>, value, index, in,
+                              op == af_max_t);
+    getQueue().sync();
+
+    *loc = index.getHostPtr()[0];
+    return value.getHostPtr()[0];
 }
 
 #define INSTANTIATE(ROp, T)                                           \

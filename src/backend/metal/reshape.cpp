@@ -9,26 +9,76 @@
 
 #include <copy.hpp>
 
+#include <arith.hpp>
+#include <assign.hpp>
+#include <common/cast.hpp>
 #include <common/half.hpp>
-#include <kernel/copy.hpp>
-#include <platform.hpp>
-#include <queue.hpp>
+#include <index.hpp>
+#include <err_metal.hpp>
+
+#include <type_traits>
+#include <vector>
 
 namespace arrayfire {
 namespace metal {
+namespace {
+
+template<typename T>
+constexpr bool supportsMetalReshapeType =
+    !std::is_same<T, double>::value && !std::is_same<T, cdouble>::value;
+
+std::vector<af_index_t> reshapeIndices(const dim4 &dims) {
+    std::vector<af_index_t> indices(4);
+    for (int i = 0; i < 4; ++i) {
+        indices[i].idx.seq =
+            af_seq{0.0, static_cast<double>(dims[i]) - 1.0, 1.0};
+        indices[i].isSeq   = true;
+        indices[i].isBatch = false;
+    }
+    return indices;
+}
+
+}  // namespace
+
 template<typename T>
 void multiply_inplace(Array<T> &in, double val) {
-    getQueue().enqueue(kernel::copyElemwise<T, T>, in, in, static_cast<T>(0),
-                       val);
+    if constexpr (supportsMetalReshapeType<T>) {
+        auto factor = createValueArray<T>(in.dims(), scalar<T>(val));
+        in = arithOp<T, af_mul_t>(in, factor, in.dims());
+    } else {
+        AF_ERROR("Metal reshape scaling does not support double precision",
+                 AF_ERR_NOT_SUPPORTED);
+    }
 }
 
 template<typename inType, typename outType>
 Array<outType> reshape(const Array<inType> &in, const dim4 &outDims,
                        outType defaultValue, double scale) {
-    Array<outType> out = createValueArray(outDims, defaultValue);
-    getQueue().enqueue(kernel::copyElemwise<outType, inType>, out, in,
-                       defaultValue, scale);
-    return out;
+    if constexpr (supportsMetalReshapeType<inType> &&
+                  supportsMetalReshapeType<outType>) {
+        Array<outType> transformed = common::cast<outType>(in);
+        if (scale != 1.0) {
+            auto factor = createValueArray<outType>(
+                transformed.dims(), scalar<outType>(scale));
+            transformed = arithOp<outType, af_mul_t>(
+                transformed, factor, transformed.dims());
+        }
+        if (transformed.dims() == outDims) { return transformed; }
+
+        Array<outType> out = createValueArray(outDims, defaultValue);
+        dim4 copyDims;
+        for (int i = 0; i < 4; ++i)
+            copyDims[i] = std::min(in.dims()[i], outDims[i]);
+        if (copyDims.elements() == 0) { return out; }
+
+        auto indices = reshapeIndices(copyDims);
+        auto source  = index<outType>(transformed, indices.data());
+        assign<outType>(out, indices.data(), source);
+        return out;
+    } else {
+        AF_ERROR("Metal reshape does not support double precision",
+                 AF_ERR_NOT_SUPPORTED);
+    }
 }
 
 #define INSTANTIATE(T) \

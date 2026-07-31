@@ -9,11 +9,11 @@
 
 #include <assign.hpp>
 #include <kernel/assign.hpp>
-#include <metal_compute_assign.hpp>
 
 #include <Array.hpp>
 #include <Param.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <handle.hpp>
 #include <platform.hpp>
 #include <types.hpp>
@@ -53,17 +53,11 @@ void assign(Array<T>& out, const af_index_t idxrs[], const Array<T>& rhs) {
 
     vector<CParam<uint>> idxParams(idxArrs.begin(), idxArrs.end());
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    const bool sequencesOnly = std::all_of(isSeq.begin(), isSeq.end(),
-                                           [](bool value) { return value; });
-    const bool unitSteps =
-        std::all_of(seqs.begin(), seqs.end(),
-                    [](const af_seq& sequence) { return sequence.step == 1; });
-    if (sequencesOnly && unitSteps && kernel::supportsMetalAssign(type))
-        getQueue().enqueue(kernel::assignMetal<T>, out, out.getDataDims(), rhs,
-                           seqs);
-    else
-        getQueue().enqueue(kernel::assign<T>, out, out.getDataDims(), rhs,
-                           move(isSeq), move(seqs), move(idxParams));
+    if (!kernel::supportsMetalAssign(type))
+        AF_ERROR("Assignment type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    getQueue().enqueueNative(kernel::assignMetal<T>, out, out.getDataDims(),
+                             rhs, move(isSeq), move(seqs), move(idxParams));
 }
 
 #define INSTANTIATE(T)                                                \

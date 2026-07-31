@@ -30,8 +30,9 @@ Array<uint> where(const Array<T> &in) {
     const dim_t *strides = in.strides().get();
     static const T zero  = scalar<T>(0);
 
-    const T *iptr = in.get();
+    const T *iptr = in.getHostPtr();
     auto out_vec  = memAlloc<uint>(in.elements());
+    uint *out_ptr = bufferData<uint>(out_vec.get());
     getQueue().sync();
 
     dim_t count = 0;
@@ -48,7 +49,7 @@ Array<uint> where(const Array<T> &in) {
                 for (dim_t x = 0; x < dims[0]; x++) {
                     T val = iptr[offy + x];
                     if (val != zero) {
-                        out_vec[count] = idx;
+                        out_ptr[count] = idx;
                         count++;
                     }
                     idx++;
@@ -57,8 +58,8 @@ Array<uint> where(const Array<T> &in) {
         }
     }
 
-    Array<uint> out = createDeviceDataArray<uint>(dim4(count), out_vec.get());
-    out_vec.release();
+    Array<uint> out = createEmptyArray<uint>(dim4(count));
+    std::copy(out_ptr, out_ptr + count, out.getHostPtr());
     return out;
 }
 

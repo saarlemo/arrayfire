@@ -10,8 +10,8 @@
 #include <diff.hpp>
 
 #include <Array.hpp>
+#include <err_metal.hpp>
 #include <kernel/diff.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 
 #include <af/dim4.hpp>
@@ -28,12 +28,11 @@ Array<T> diff1(const Array<T> &in, const int dim) {
     Array<T> outArray = createEmptyArray<T>(dims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalDiff(type)) {
-        getQueue().enqueue(kernel::diff1Metal<T>, outArray, in, dim);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::diff1<T>, outArray, in, dim);
+    if (!kernel::supportsMetalDiff(type)) {
+        AF_ERROR("Diff type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::diff1Metal<T>, outArray, in, dim);
 
     return outArray;
 }
@@ -47,12 +46,11 @@ Array<T> diff2(const Array<T> &in, const int dim) {
     Array<T> outArray = createEmptyArray<T>(dims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalDiff(type)) {
-        getQueue().enqueue(kernel::diff2Metal<T>, outArray, in, dim);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::diff2<T>, outArray, in, dim);
+    if (!kernel::supportsMetalDiff(type)) {
+        AF_ERROR("Diff type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::diff2Metal<T>, outArray, in, dim);
 
     return outArray;
 }

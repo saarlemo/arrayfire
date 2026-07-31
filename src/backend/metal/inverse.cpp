@@ -14,38 +14,15 @@
 
 #include <err_metal.hpp>
 #include <handle.hpp>
-#include <range.hpp>
+#include <metal_inverse.hpp>
 #include <af/dim4.hpp>
-#include <cassert>
 
 #include <identity.hpp>
-#include <lapack_helper.hpp>
-#include <lu.hpp>
 #include <platform.hpp>
-#include <queue.hpp>
 #include <solve.hpp>
 
 namespace arrayfire {
 namespace metal {
-
-template<typename T>
-using getri_func_def = int (*)(ORDER_TYPE, int, T *, int, const int *);
-
-#define INV_FUNC_DEF(FUNC) \
-    template<typename T>   \
-    FUNC##_func_def<T> FUNC##_func();
-
-#define INV_FUNC(FUNC, TYPE, PREFIX)            \
-    template<>                                  \
-    FUNC##_func_def<TYPE> FUNC##_func<TYPE>() { \
-        return &LAPACK_NAME(PREFIX##FUNC);      \
-    }
-
-INV_FUNC_DEF(getri)
-INV_FUNC(getri, float, s)
-INV_FUNC(getri, double, d)
-INV_FUNC(getri, cfloat, c)
-INV_FUNC(getri, cdouble, z)
 
 template<typename T>
 Array<T> inverse(const Array<T> &in) {
@@ -57,16 +34,18 @@ Array<T> inverse(const Array<T> &in) {
         return solve(in, I);
     }
 
-    Array<T> A       = copyArray<T>(in);
-    Array<int> pivot = lu_inplace<T>(A, false);
+    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (type != f32 && type != c32) {
+        AF_ERROR("Metal inverse supports only single-precision values",
+                 AF_ERR_NOT_SUPPORTED);
+    }
 
-    auto func = [=](Param<T> A, Param<int> pivot, int M) {
-        getri_func<T>()(AF_LAPACK_COL_MAJOR, M, A.get(), A.strides(1),
-                        pivot.get());
-    };
-    getQueue().enqueue(func, A, pivot, M);
-
-    return A;
+    Array<T> input  = copyArray<T>(in);
+    Array<T> output = createEmptyArray<T>(in.dims());
+    input.device();
+    output.device();
+    inverseMatrix(output.getBuffer(), input.getBuffer(), in.dims(), type);
+    return output;
 }
 
 #define INSTANTIATE(T) template Array<T> inverse<T>(const Array<T> &in);

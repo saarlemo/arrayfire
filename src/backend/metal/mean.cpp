@@ -11,14 +11,11 @@
 #include <common/half.hpp>
 #include <kernel/mean.hpp>
 #include <mean.hpp>
-#include <metal_compute_mean.hpp>
-#include <platform.hpp>
 #include <queue.hpp>
 #include <types.hpp>
 #include <af/dim4.hpp>
 
 #include <complex>
-#include <type_traits>
 
 using af::dim4;
 using arrayfire::common::half;
@@ -27,122 +24,80 @@ namespace arrayfire {
 namespace metal {
 
 template<typename Ti, typename Tw, typename To>
-using mean_dim_func = std::function<void(
-    Param<To>, const dim_t, const CParam<Ti>, const dim_t, const int)>;
-
-template<typename Ti, typename Tw, typename To>
-Array<To> mean(const Array<Ti> &in, const int dim) {
+Array<To> mean(const Array<Ti>& in, const int dim) {
     dim4 odims    = in.dims();
     odims[dim]    = 1;
     Array<To> out = createEmptyArray<To>(odims);
 
-    if constexpr (std::is_same<Ti, float>::value &&
-                  std::is_same<To, float>::value) {
-        if (in.dims()[dim] <= 2048) {
-            getQueue().enqueue(kernel::meanMetal, out, in, dim);
-            return out;
-        }
-    }
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalMean(inputType, outputType))
+        AF_ERROR("Types are not supported by the Metal mean kernel",
+                 AF_ERR_NOT_SUPPORTED);
 
-    static const mean_dim_func<Ti, Tw, To> mean_funcs[] = {
-        kernel::mean_dim<Ti, Tw, To, 1>(), kernel::mean_dim<Ti, Tw, To, 2>(),
-        kernel::mean_dim<Ti, Tw, To, 3>(), kernel::mean_dim<Ti, Tw, To, 4>()};
-
-    getQueue().enqueue(mean_funcs[in.ndims() - 1], out, 0, in, 0, dim);
+    getQueue().enqueueNative(kernel::meanMetal<Ti, To>, out, in, dim, false);
     return out;
 }
 
 template<typename T, typename Tw>
-using mean_weighted_dim_func =
-    std::function<void(Param<T>, const dim_t, const CParam<T>, const dim_t,
-                       const CParam<Tw>, const dim_t, const int)>;
-
-template<typename T, typename Tw>
-Array<T> mean(const Array<T> &in, const Array<Tw> &wt, const int dim) {
+Array<T> mean(const Array<T>& in, const Array<Tw>& wt, const int dim) {
     dim4 odims   = in.dims();
     odims[dim]   = 1;
     Array<T> out = createEmptyArray<T>(odims);
-    static const mean_weighted_dim_func<T, Tw> mean_funcs[] = {
-        kernel::mean_weighted_dim<T, Tw, 1>(),
-        kernel::mean_weighted_dim<T, Tw, 2>(),
-        kernel::mean_weighted_dim<T, Tw, 3>(),
-        kernel::mean_weighted_dim<T, Tw, 4>()};
 
-    getQueue().enqueue(mean_funcs[in.ndims() - 1], out, 0, in, 0, wt, 0, dim);
+    const af_dtype valueType =
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    const af_dtype weightType =
+        static_cast<af_dtype>(af::dtype_traits<Tw>::af_type);
+    if (!kernel::supportsMetalMeanWeighted(valueType, weightType))
+        AF_ERROR("Types are not supported by the Metal weighted-mean kernel",
+                 AF_ERR_NOT_SUPPORTED);
+
+    getQueue().enqueueNative(kernel::meanWeightedMetal<T, Tw>, out, in, wt, dim,
+                             false);
     return out;
 }
 
 template<typename T, typename Tw>
-T mean(const Array<T> &in, const Array<Tw> &wt) {
-    using MeanOpT = kernel::MeanOp<compute_t<T>, compute_t<T>, compute_t<Tw>>;
-    in.eval();
-    wt.eval();
+T mean(const Array<T>& in, const Array<Tw>& wt) {
+    Array<T> out = createEmptyArray<T>(1);
+
+    const af_dtype valueType =
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    const af_dtype weightType =
+        static_cast<af_dtype>(af::dtype_traits<Tw>::af_type);
+    if (!kernel::supportsMetalMeanWeighted(valueType, weightType))
+        AF_ERROR("Types are not supported by the Metal weighted-mean kernel",
+                 AF_ERR_NOT_SUPPORTED);
+
+    getQueue().enqueueNative(kernel::meanWeightedMetal<T, Tw>, out, in, wt, 0,
+                             true);
     getQueue().sync();
-
-    af::dim4 dims    = in.dims();
-    af::dim4 strides = in.strides();
-    const T *inPtr   = in.get();
-    const Tw *wtPtr  = wt.get();
-
-    auto input  = compute_t<T>(inPtr[0]);
-    auto weight = compute_t<Tw>(wtPtr[0]);
-    MeanOpT Op(input, weight);
-
-    for (dim_t l = 0; l < dims[3]; l++) {
-        dim_t off3 = l * strides[3];
-
-        for (dim_t k = 0; k < dims[2]; k++) {
-            dim_t off2 = k * strides[2];
-
-            for (dim_t j = 0; j < dims[1]; j++) {
-                dim_t off1 = j * strides[1];
-
-                for (dim_t i = 0; i < dims[0]; i++) {
-                    dim_t idx = i + off1 + off2 + off3;
-                    Op(compute_t<T>(inPtr[idx]), compute_t<Tw>(wtPtr[idx]));
-                }
-            }
-        }
-    }
-
-    return T(Op.runningMean);
+    return out.getHostPtr()[0];
 }
 
 template<typename Ti, typename Tw, typename To>
-To mean(const Array<Ti> &in) {
-    using MeanOpT = kernel::MeanOp<compute_t<Ti>, compute_t<To>, compute_t<Tw>>;
-    in.eval();
+To mean(const Array<Ti>& in) {
+    Array<To> out = createEmptyArray<To>(1);
+
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalMean(inputType, outputType))
+        AF_ERROR("Types are not supported by the Metal mean kernel",
+                 AF_ERR_NOT_SUPPORTED);
+
+    getQueue().enqueueNative(kernel::meanMetal<Ti, To>, out, in, 0, true);
     getQueue().sync();
-
-    af::dim4 dims    = in.dims();
-    af::dim4 strides = in.strides();
-    const Ti *inPtr  = in.get();
-
-    MeanOpT Op(0, 0);
-
-    for (dim_t l = 0; l < dims[3]; l++) {
-        dim_t off3 = l * strides[3];
-
-        for (dim_t k = 0; k < dims[2]; k++) {
-            dim_t off2 = k * strides[2];
-
-            for (dim_t j = 0; j < dims[1]; j++) {
-                dim_t off1 = j * strides[1];
-
-                for (dim_t i = 0; i < dims[0]; i++) {
-                    dim_t idx = i + off1 + off2 + off3;
-                    Op(compute_t<Ti>(inPtr[idx]), 1);
-                }
-            }
-        }
-    }
-
-    return To(Op.runningMean);
+    return out.getHostPtr()[0];
 }
 
 #define INSTANTIATE(Ti, Tw, To)                        \
-    template To mean<Ti, Tw, To>(const Array<Ti> &in); \
-    template Array<To> mean<Ti, Tw, To>(const Array<Ti> &in, const int dim);
+    template To mean<Ti, Tw, To>(const Array<Ti>& in); \
+    template Array<To> mean<Ti, Tw, To>(const Array<Ti>& in, const int dim);
 
 INSTANTIATE(double, double, double);
 INSTANTIATE(float, float, float);
@@ -161,8 +116,8 @@ INSTANTIATE(half, float, half);
 INSTANTIATE(half, float, float);
 
 #define INSTANTIATE_WGT(T, Tw)                                              \
-    template T mean<T, Tw>(const Array<T> &in, const Array<Tw> &wts);       \
-    template Array<T> mean<T, Tw>(const Array<T> &in, const Array<Tw> &wts, \
+    template T mean<T, Tw>(const Array<T>& in, const Array<Tw>& wts);       \
+    template Array<T> mean<T, Tw>(const Array<T>& in, const Array<Tw>& wts, \
                                   const int dim);
 
 INSTANTIATE_WGT(double, double);

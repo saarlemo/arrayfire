@@ -10,9 +10,9 @@
 #include <Array.hpp>
 #include <common/dispatch.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <kernel/unwrap.hpp>
 #include <math.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <unwrap.hpp>
 
@@ -37,14 +37,12 @@ Array<T> unwrap(const Array<T> &in, const dim_t wx, const dim_t wy,
 
     const int d         = (is_column) ? 1 : 0;
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalUnwrap(type)) {
-        getQueue().enqueue(kernel::unwrapMetal<T>, outArray, in, wx, wy, sx, sy,
-                           px, py, dx, dy, d);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::unwrap_dim<T>, outArray, in, wx, wy, sx, sy,
-                           px, py, dx, dy, d);
+    if (!kernel::supportsMetalUnwrap(type)) {
+        AF_ERROR("Unwrap type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::unwrapMetal<T>, outArray, in, wx, wy, sx,
+                             sy, px, py, dx, dy, d);
 
     return outArray;
 }

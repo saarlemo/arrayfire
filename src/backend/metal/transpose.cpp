@@ -11,7 +11,7 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <af/dim4.hpp>
 
@@ -32,12 +32,11 @@ Array<T> transpose(const Array<T> &in, const bool conjugate) {
     Array<T> out = createEmptyArray<T>(outDims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalTranspose(type)) {
-        getQueue().enqueue(kernel::transposeMetal<T>, out, in, conjugate);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::transpose<T>, out, in, conjugate);
+    if (!kernel::supportsMetalTranspose(type)) {
+        AF_ERROR("Transpose type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::transposeMetal<T>, out, in, conjugate);
 
     return out;
 }
@@ -45,12 +44,11 @@ Array<T> transpose(const Array<T> &in, const bool conjugate) {
 template<typename T>
 void transpose_inplace(Array<T> &in, const bool conjugate) {
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalTranspose(type)) {
-        getQueue().enqueue(kernel::transposeInplaceMetal<T>, in, conjugate);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::transpose_inplace<T>, in, conjugate);
+    if (!kernel::supportsMetalTranspose(type)) {
+        AF_ERROR("In-place transpose type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::transposeInplaceMetal<T>, in, conjugate);
 }
 
 #define INSTANTIATE(T)                                                     \

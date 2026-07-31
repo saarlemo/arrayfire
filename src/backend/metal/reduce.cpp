@@ -8,44 +8,18 @@
  ********************************************************/
 
 #include <Array.hpp>
-#include <common/Binary.hpp>
-#include <common/Transform.hpp>
 #include <common/half.hpp>
 #include <kernel/reduce.hpp>
-#include <metal_compute_reduce.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <reduce.hpp>
 #include <af/dim4.hpp>
 
-#include <complex>
-#include <functional>
-#include <type_traits>
-
 using af::dim4;
-using arrayfire::common::Binary;
 using arrayfire::common::half;
-using arrayfire::common::Transform;
-using arrayfire::metal::cdouble;
 
 namespace arrayfire {
-namespace common {
-
-template<>
-struct Binary<cdouble, af_add_t> {
-    static cdouble init() { return cdouble(0, 0); }
-
-    cdouble operator()(cdouble lhs, cdouble rhs) {
-        return cdouble(real(lhs) + real(rhs), imag(lhs) + imag(rhs));
-    }
-};
-
-}  // namespace common
 namespace metal {
-
-template<af_op_t op, typename Ti, typename To>
-using reduce_dim_func = std::function<void(
-    Param<To>, const dim_t, CParam<Ti>, const dim_t, const int, bool, double)>;
 
 template<af_op_t op, typename Ti, typename To>
 Array<To> reduce(const Array<Ti> &in, const int dim, bool change_nan,
@@ -54,29 +28,18 @@ Array<To> reduce(const Array<Ti> &in, const int dim, bool change_nan,
     odims[dim] = 1;
 
     Array<To> out = createEmptyArray<To>(odims);
-    if constexpr (op == af_add_t && std::is_same<Ti, float>::value &&
-                  std::is_same<To, float>::value) {
-        getQueue().enqueue(kernel::reduceAddMetal, out, in, dim, change_nan,
-                           nanval);
-        return out;
-    }
-    static const reduce_dim_func<op, Ti, To> reduce_funcs[4] = {
-        kernel::reduce_dim<op, Ti, To, 1>(),
-        kernel::reduce_dim<op, Ti, To, 2>(),
-        kernel::reduce_dim<op, Ti, To, 3>(),
-        kernel::reduce_dim<op, Ti, To, 4>()};
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalReduce(inputType, outputType))
+        AF_ERROR("Types are not supported by the Metal reduction kernel",
+                 AF_ERR_NOT_SUPPORTED);
 
-    getQueue().enqueue(reduce_funcs[in.ndims() - 1], out, 0, in, 0, dim,
-                       change_nan, nanval);
-
+    getQueue().enqueueNative(kernel::reduceMetal<op, Ti, To>, out, in, dim,
+                             false, change_nan, nanval);
     return out;
 }
-
-template<af_op_t op, typename Ti, typename Tk, typename To>
-using reduce_dim_func_by_key =
-    std::function<void(Param<To> ovals, const dim_t ovOffset, CParam<Tk> keys,
-                       CParam<Ti> vals, const dim_t vOffset, int *n_reduced,
-                       const int dim, bool change_nan, double nanval)>;
 
 template<af_op_t op, typename Ti, typename Tk, typename To>
 void reduce_by_key(Array<Tk> &keys_out, Array<To> &vals_out,
@@ -85,11 +48,21 @@ void reduce_by_key(Array<Tk> &keys_out, Array<To> &vals_out,
     dim4 okdims = keys.dims();
     dim4 ovdims = vals.dims();
 
-    int n_reduced;
     Array<Tk> fullsz_okeys = createEmptyArray<Tk>(okdims);
-    getQueue().enqueue(kernel::n_reduced_keys<Tk>, fullsz_okeys, &n_reduced,
-                       keys);
+    Array<int> reducedCount = createEmptyArray<int>(1);
+    const af_dtype keyType =
+        static_cast<af_dtype>(af::dtype_traits<Tk>::af_type);
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalReduceByKey(keyType, inputType, outputType))
+        AF_ERROR("Types are not supported by the Metal reduce-by-key kernel",
+                 AF_ERR_NOT_SUPPORTED);
+    getQueue().enqueueNative(kernel::reduceByKeyCompactMetal<Tk>, fullsz_okeys,
+                             reducedCount, keys);
     getQueue().sync();
+    const int n_reduced = reducedCount.getHostPtr()[0];
 
     okdims[0]   = n_reduced;
     ovdims[dim] = n_reduced;
@@ -102,32 +75,26 @@ void reduce_by_key(Array<Tk> &keys_out, Array<To> &vals_out,
     Array<Tk> okeys = createSubArray<Tk>(fullsz_okeys, index, true);
     Array<To> ovals = createEmptyArray<To>(ovdims);
 
-    static const reduce_dim_func_by_key<op, Ti, Tk, To> reduce_funcs[4] = {
-        kernel::reduce_dim_by_key<op, Ti, Tk, To, 1>(),
-        kernel::reduce_dim_by_key<op, Ti, Tk, To, 2>(),
-        kernel::reduce_dim_by_key<op, Ti, Tk, To, 3>(),
-        kernel::reduce_dim_by_key<op, Ti, Tk, To, 4>()};
-
-    getQueue().enqueue(reduce_funcs[vals.ndims() - 1], ovals, 0, keys, vals, 0,
-                       &n_reduced, dim, change_nan, nanval);
+    getQueue().enqueueNative(kernel::reduceByKeyMetal<op, Ti, Tk, To>, ovals,
+                             keys, vals, dim, n_reduced, change_nan, nanval);
 
     keys_out = okeys;
     vals_out = ovals;
 }
 
 template<af_op_t op, typename Ti, typename To>
-using reduce_all_func =
-    std::function<void(Param<To>, CParam<Ti>, bool, double)>;
-
-template<af_op_t op, typename Ti, typename To>
 Array<To> reduce_all(const Array<Ti> &in, bool change_nan, double nanval) {
-    in.eval();
-
     Array<To> out = createEmptyArray<To>(1);
-    static const reduce_all_func<op, Ti, To> reduce_all_kernel =
-        kernel::reduce_all<op, Ti, To>();
-    getQueue().enqueue(reduce_all_kernel, out, in, change_nan, nanval);
-    getQueue().sync();
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalReduce(inputType, outputType))
+        AF_ERROR("Types are not supported by the Metal reduction kernel",
+                 AF_ERR_NOT_SUPPORTED);
+
+    getQueue().enqueueNative(kernel::reduceMetal<op, Ti, To>, out, in, 0, true,
+                             change_nan, nanval);
     return out;
 }
 

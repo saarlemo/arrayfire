@@ -8,68 +8,38 @@
  ********************************************************/
 
 #pragma once
-
 #include <Param.hpp>
-#include <math.hpp>
-
-#include <cassert>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<typename Ti, typename To, bool isDX>
-void derivative(Param<To> output, CParam<Ti> input) {
-    const af::dim4 dims     = input.dims();
-    const af::dim4 istrides = input.strides();
-    const af::dim4 ostrides = output.strides();
+bool supportsMetalSobel(af_dtype inputType) noexcept;
 
-    auto reflect101 = [](int index, int endIndex) -> int {
-        return std::abs(endIndex - std::abs(endIndex - index));
-    };
+void launchMetalSobel(BufferParam derivative0,
+                      const af::dim4& derivative0Strides,
+                      BufferParam derivative1,
+                      const af::dim4& derivative1Strides,
+                      size_t outputBytes, BufferParam input, size_t inputBytes,
+                      const af::dim4& inputDims, const af::dim4& inputStrides,
+                      af_dtype inputType);
 
-    for (dim_t b3 = 0; b3 < dims[3]; ++b3) {
-        To* optr       = output.get() + b3 * ostrides[3];
-        const Ti* iptr = input.get() + b3 * istrides[3];
-        for (dim_t b2 = 0; b2 < dims[2]; ++b2) {
-            for (dim_t j = 0; j < dims[1]; ++j) {
-                int joff    = j;
-                int _joff   = reflect101(j - 1, static_cast<int>(dims[1] - 1));
-                int joff_   = reflect101(j + 1, static_cast<int>(dims[1] - 1));
-                int joffset = j * ostrides[1];
-
-                for (dim_t i = 0; i < dims[0]; ++i) {
-                    To accum = To(0);
-
-                    int ioff = i;
-                    int _ioff =
-                        reflect101(i - 1, static_cast<int>(dims[0] - 1));
-                    int ioff_ =
-                        reflect101(i + 1, static_cast<int>(dims[0] - 1));
-
-                    To NW = iptr[_joff * istrides[1] + _ioff * istrides[0]];
-                    To SW = iptr[_joff * istrides[1] + ioff_ * istrides[0]];
-                    To NE = iptr[joff_ * istrides[1] + _ioff * istrides[0]];
-                    To SE = iptr[joff_ * istrides[1] + ioff_ * istrides[0]];
-
-                    if (isDX) {
-                        To N  = iptr[joff * istrides[1] + _ioff * istrides[0]];
-                        To S  = iptr[joff * istrides[1] + ioff_ * istrides[0]];
-                        accum = SW + SE - (NW + NE) + 2 * (S - N);
-                    } else {
-                        To W  = iptr[_joff * istrides[1] + ioff * istrides[0]];
-                        To E  = iptr[joff_ * istrides[1] + ioff * istrides[0]];
-                        accum = NE + SE - (NW + SW) + 2 * (E - W);
-                    }
-
-                    optr[joffset + i * ostrides[0]] = accum;
-                }
-            }
-
-            optr += ostrides[2];
-            iptr += istrides[2];
-        }
+template<typename Ti, typename To>
+void sobelMetal(Param<To> derivative0, Param<To> derivative1,
+                CParam<Ti> input) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalSobel(
+        derivative0.bufferParam(), derivative0.strides(),
+        derivative1.bufferParam(), derivative1.strides(),
+        static_cast<size_t>(derivative0.dims().elements()) * sizeof(To),
+        input.bufferParam(), inputElements * sizeof(Ti), input.dims(),
+        input.strides(),
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type));
 }
 
 }  // namespace kernel

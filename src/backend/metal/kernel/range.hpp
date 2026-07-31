@@ -9,42 +9,24 @@
 
 #pragma once
 #include <Param.hpp>
-#include <af/dim4.hpp>
-
-using af::dim4;
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<typename T, int dim>
-void range(Param<T> output) {
-    T* out = output.get();
+bool supportsMetalRange(af_dtype type) noexcept;
 
-    const dim4 dims    = output.dims();
-    const dim4 strides = output.strides();
+void launchMetalRange(BufferParam output, size_t bytes, const af::dim4& dims,
+                      const af::dim4& strides, unsigned sequenceDimension,
+                      af_dtype type);
 
-    for (dim_t w = 0; w < dims[3]; w++) {
-        dim_t offW = w * strides[3];
-        for (dim_t z = 0; z < dims[2]; z++) {
-            dim_t offWZ = offW + z * strides[2];
-            for (dim_t y = 0; y < dims[1]; y++) {
-                dim_t offWZY = offWZ + y * strides[1];
-                for (dim_t x = 0; x < dims[0]; x++) {
-                    dim_t id = offWZY + x;
-                    if (dim == 0) {
-                        out[id] = x;
-                    } else if (dim == 1) {
-                        out[id] = y;
-                    } else if (dim == 2) {
-                        out[id] = z;
-                    } else if (dim == 3) {
-                        out[id] = w;
-                    }
-                }
-            }
-        }
-    }
+template<typename T>
+void rangeMetal(Param<T> output, const unsigned sequenceDimension) {
+    launchMetalRange(output.bufferParam(),
+                     static_cast<size_t>(output.dims().elements()) * sizeof(T),
+                     output.dims(), output.strides(), sequenceDimension,
+                     static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

@@ -14,7 +14,6 @@
 #include <common/ArrayInfo.hpp>
 #include <common/MemoryManagerBase.hpp>
 #include <common/jit/Node.hpp>
-#include <jit/Node.hpp>
 #include <memory.hpp>
 #include <platform.hpp>
 
@@ -31,19 +30,7 @@
 namespace arrayfire {
 namespace metal {
 
-namespace jit {
-template<typename T>
-class BufferNode;
-}
-
 namespace kernel {
-template<typename T>
-void evalArray(Param<T> in, common::Node_ptr node);
-
-template<typename T>
-void evalMultiple(std::vector<Param<T>> arrays,
-                  std::vector<common::Node_ptr> nodes);
-
 }  // namespace kernel
 
 template<typename T>
@@ -115,7 +102,7 @@ kJITHeuristics passesJitHeuristics(nonstd::span<common::Node *> node);
 
 template<typename T>
 void *getDevicePtr(const Array<T> &arr) {
-    T *ptr = arr.device();
+    MTL::Buffer *ptr = arr.device();
     memLock(ptr);
 
     return (void *)ptr;
@@ -123,8 +110,7 @@ void *getDevicePtr(const Array<T> &arr) {
 
 template<typename T>
 void *getRawPtr(const Array<T> &arr) {
-    getQueue().sync();
-    return (void *)(arr.get(false));
+    return arr.get();
 }
 
 /// Checks if the Array object can be migrated to the current device and if not,
@@ -132,15 +118,15 @@ void *getRawPtr(const Array<T> &arr) {
 ///
 /// \param[in] arr The Array that will be checked.
 template<typename T>
-void checkAndMigrate(const Array<T> &arr);
+void checkAndMigrate(Array<T> &arr);
 
 // Array Array Implementation
 template<typename T>
 class Array {
     ArrayInfo info;  // Must be the first element of Array<T>
 
-    /// Pointer to the data
-    std::shared_ptr<T> data;
+    /// Native Metal buffer containing the array data
+    std::shared_ptr<MTL::Buffer> data;
 
     /// The shape of the underlying parent data.
     af::dim4 data_dims;
@@ -237,7 +223,7 @@ class Array {
     void eval() const;
 
     dim_t getOffset() const { return info.getOffset(); }
-    shared_ptr<T> getData() const { return data; }
+    shared_ptr<MTL::Buffer> getData() const { return data; }
 
     dim4 getDataDims() const { return data_dims; }
 
@@ -246,35 +232,57 @@ class Array {
     size_t getAllocatedBytes() const {
         if (!isReady()) return 0;
         size_t bytes = memoryManager().allocated(data.get());
-        // External device poitner
-        if (bytes == 0 && data.get()) {
-            return data_dims.elements() * sizeof(T);
-        }
+        // External Metal buffer
+        if (bytes == 0) { return bufferLength(data.get()); }
         return bytes;
     }
 
-    T *device();
+    MTL::Buffer *device();
 
-    T *device() const { return const_cast<Array<T> *>(this)->device(); }
-
-    T *get(bool withOffset = true) {
-        return const_cast<T *>(
-            static_cast<const Array<T> *>(this)->get(withOffset));
+    MTL::Buffer *device() const {
+        return const_cast<Array<T> *>(this)->device();
     }
 
-    const T *get(bool withOffset = true) const {
-        if (!data.get()) eval();
-        return data.get() + (withOffset ? getOffset() : 0);
+    MTL::Buffer *get() {
+        if (!data) eval();
+        return data.get();
+    }
+
+    MTL::Buffer *get() const {
+        if (!data) eval();
+        return data.get();
+    }
+
+    MTL::Buffer *getBuffer() { return get(); }
+
+    MTL::Buffer *getBuffer() const { return get(); }
+
+    BufferParam bufferParam() const {
+        return {get(), static_cast<size_t>(getOffset()) * sizeof(T)};
+    }
+
+    T *getHostPtr(bool withOffset = true) {
+        return const_cast<T *>(
+            static_cast<const Array<T> *>(this)->getHostPtr(withOffset));
+    }
+
+    const T *getHostPtr(bool withOffset = true) const {
+        if (!data) eval();
+        if (!data) return nullptr;
+        const auto *ptr = bufferData<T>(data.get());
+        return ptr + (withOffset ? getOffset() : 0);
     }
 
     int useCount() const { return static_cast<int>(data.use_count()); }
 
     operator Param<T>() {
-        return Param<T>(this->get(), this->dims(), this->strides());
+        return Param<T>(this->getBuffer(), this->getOffset(), this->dims(),
+                        this->strides());
     }
 
     operator CParam<T>() const {
-        return CParam<T>(this->get(), this->dims(), this->strides());
+        return CParam<T>(this->getBuffer(), this->getOffset(), this->dims(),
+                         this->strides());
     }
 
     common::Node_ptr getNode() const;
@@ -299,13 +307,10 @@ class Array {
                                       const std::vector<af_seq> &index,
                                       bool copy);
 
-    friend void kernel::evalArray<T>(Param<T> in, common::Node_ptr node);
-    friend void kernel::evalMultiple<T>(std::vector<Param<T>> arrays,
-                                        std::vector<common::Node_ptr> nodes);
-
     friend void destroyArray<T>(Array<T> *arr);
     friend void *getDevicePtr<T>(const Array<T> &arr);
     friend void *getRawPtr<T>(const Array<T> &arr);
+    friend void checkAndMigrate<T>(Array<T> &arr);
 };
 
 }  // namespace metal

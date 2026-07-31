@@ -9,13 +9,11 @@
 
 #include <Array.hpp>
 #include <kernel/scan_by_key.hpp>
-#include <metal_compute_scan_by_key.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <scan_by_key.hpp>
 #include <af/dim4.hpp>
 #include <complex>
-#include <type_traits>
 
 using af::dim4;
 
@@ -27,31 +25,16 @@ Array<To> scan(const Array<Tk>& key, const Array<Ti>& in, const int dim,
     const dim4& dims = in.dims();
     Array<To> out    = createEmptyArray<To>(dims);
 
-    if constexpr (op == af_add_t && std::is_same<Ti, To>::value) {
-        const af_dtype keyType =
-            static_cast<af_dtype>(af::dtype_traits<Tk>::af_type);
-        const af_dtype valueType =
-            static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
-        if (inclusive_scan &&
-            kernel::supportsMetalScanByKey(keyType, valueType)) {
-            getQueue().enqueue(kernel::scanByKeyMetal<Ti, Tk, To>, out, key, in,
-                               dim);
-            return out;
-        }
-    }
+    const af_dtype keyType =
+        static_cast<af_dtype>(af::dtype_traits<Tk>::af_type);
+    const af_dtype valueType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    if (!kernel::supportsMetalScanByKey(keyType, valueType))
+        AF_ERROR("Type is not supported by the Metal scan-by-key kernel",
+                 AF_ERR_NOT_SUPPORTED);
 
-    kernel::scan_dim_by_key<op, Ti, Tk, To, 1> func1(inclusive_scan);
-    kernel::scan_dim_by_key<op, Ti, Tk, To, 2> func2(inclusive_scan);
-    kernel::scan_dim_by_key<op, Ti, Tk, To, 3> func3(inclusive_scan);
-    kernel::scan_dim_by_key<op, Ti, Tk, To, 4> func4(inclusive_scan);
-
-    switch (in.ndims()) {
-        case 1: getQueue().enqueue(func1, out, 0, key, 0, in, 0, dim); break;
-        case 2: getQueue().enqueue(func2, out, 0, key, 0, in, 0, dim); break;
-        case 3: getQueue().enqueue(func3, out, 0, key, 0, in, 0, dim); break;
-        case 4: getQueue().enqueue(func4, out, 0, key, 0, in, 0, dim); break;
-    }
-
+    getQueue().enqueueNative(kernel::scanByKeyMetal<op, Ti, Tk, To>, out, key,
+                             in, dim, inclusive_scan);
     return out;
 }
 

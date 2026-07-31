@@ -9,12 +9,10 @@
 #include <triangle.hpp>
 
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <kernel/triangle.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <af/dim4.hpp>
-
-#include <functional>
 
 using arrayfire::common::half;
 
@@ -22,26 +20,15 @@ namespace arrayfire {
 namespace metal {
 
 template<typename T>
-using triangleFunc = std::function<void(Param<T>, CParam<T>)>;
-
-template<typename T>
 void triangle(Array<T> &out, const Array<T> &in, const bool is_upper,
               const bool is_unit_diag) {
-    static const triangleFunc<T> funcs[4] = {
-        kernel::triangle<T, false, false>,
-        kernel::triangle<T, false, true>,
-        kernel::triangle<T, true, false>,
-        kernel::triangle<T, true, true>,
-    };
-    const int funcIdx   = is_upper * 2 + is_unit_diag;
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalTriangle(type)) {
-        getQueue().enqueue(kernel::triangleMetal<T>, out, in, is_upper,
-                           is_unit_diag);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(funcs[funcIdx], out, in);
+    if (!kernel::supportsMetalTriangle(type)) {
+        AF_ERROR("Triangle type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::triangleMetal<T>, out, in, is_upper,
+                             is_unit_diag);
 }
 
 template<typename T>

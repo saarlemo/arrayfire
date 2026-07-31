@@ -9,9 +9,9 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <join.hpp>
 #include <kernel/join.hpp>
-#include <metal_compute.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 
@@ -41,12 +41,11 @@ Array<T> join(const int dim, const Array<T> &first, const Array<T> &second) {
     Array<T> out = createEmptyArray<T>(odims);
     std::vector<CParam<T>> v{first, second};
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalJoin(type)) {
-        getQueue().enqueue(kernel::joinMetal<T>, dim, out, v, 2);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::join<T>, dim, out, v, 2);
+    if (!kernel::supportsMetalJoin(type)) {
+        AF_ERROR("Join type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::joinMetal<T>, dim, out, v, 2);
 
     return out;
 }
@@ -63,13 +62,12 @@ void join(Array<T> &out, const int dim, const std::vector<Array<T>> &inputs) {
     std::vector<CParam<T>> inputParams(inputs.begin(), inputs.end());
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalJoin(type)) {
-        getQueue().enqueue(kernel::joinMetal<T>, dim, out, inputParams,
-                           n_arrays);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::join<T>, dim, out, inputParams, n_arrays);
+    if (!kernel::supportsMetalJoin(type)) {
+        AF_ERROR("Join type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::joinMetal<T>, dim, out, inputParams,
+                             n_arrays);
 }
 
 #define INSTANTIATE(T)                                              \

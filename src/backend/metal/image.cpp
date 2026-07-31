@@ -29,7 +29,7 @@ void copy_image(const Array<T> &in, fg_image image) {
     ForgeModule &_ = forgePlugin();
 
     CheckGL("Before CopyArrayToImage");
-    const T *d_X = in.get();
+    const T *d_X = in.getHostPtr();
     getQueue().sync();
 
     unsigned data_size = 0, buffer = 0;

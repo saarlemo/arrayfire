@@ -9,26 +9,25 @@
 
 #pragma once
 #include <Param.hpp>
-#include <math.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<typename T>
-void identity(Param<T> out) {
-    T *ptr                  = out.get();
-    const af::dim4 out_dims = out.dims();
+bool supportsMetalIdentity(af_dtype type) noexcept;
 
-    for (dim_t k = 0; k < out_dims[2] * out_dims[3]; k++) {
-        for (dim_t j = 0; j < out_dims[1]; j++) {
-            for (dim_t i = 0; i < out_dims[0]; i++) {
-                ptr[j * out_dims[0] + i] =
-                    (i == j) ? scalar<T>(1) : scalar<T>(0);
-            }
-        }
-        ptr += out_dims[0] * out_dims[1];
-    }
+void launchMetalIdentity(BufferParam output, size_t bytes,
+                         const af::dim4& dims,
+                         const af::dim4& strides, af_dtype type);
+
+template<typename T>
+void identityMetal(Param<T> output) {
+    launchMetalIdentity(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T),
+        output.dims(), output.strides(),
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

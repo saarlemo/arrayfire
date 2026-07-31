@@ -9,74 +9,48 @@
 
 #pragma once
 #include <Param.hpp>
-#include <utility.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalDiff(af_dtype type) noexcept;
+
+void launchMetalDiff(BufferParam output, size_t outputBytes,
+                     const af::dim4& outputDims, const af::dim4& outputStrides,
+                     BufferParam input, size_t inputBytes,
+                     const af::dim4& inputStrides, unsigned dimension,
+                     bool secondOrder, af_dtype type);
+
 template<typename T>
-void diff1(Param<T> out, CParam<T> in, int const dim) {
-    af::dim4 dims = out.dims();
-    // Bool for dimension
-    bool is_dim0 = dim == 0;
-    bool is_dim1 = dim == 1;
-    bool is_dim2 = dim == 2;
-    bool is_dim3 = dim == 3;
-
-    T const* const inPtr = in.get();
-    T* outPtr            = out.get();
-
-    // TODO: Improve this
-    for (dim_t l = 0; l < dims[3]; l++) {
-        for (dim_t k = 0; k < dims[2]; k++) {
-            for (dim_t j = 0; j < dims[1]; j++) {
-                for (dim_t i = 0; i < dims[0]; i++) {
-                    // Operation: out[index] = in[index + 1 * dim_size] -
-                    // in[index]
-                    int idx     = getIdx(in.strides(), i, j, k, l);
-                    int jdx     = getIdx(in.strides(), i + is_dim0, j + is_dim1,
-                                         k + is_dim2, l + is_dim3);
-                    int odx     = getIdx(out.strides(), i, j, k, l);
-                    outPtr[odx] = inPtr[jdx] - inPtr[idx];
-                }
-            }
-        }
+void diff1Metal(Param<T> output, CParam<T> input, const int dimension) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalDiff(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.strides(), static_cast<unsigned>(dimension), false,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 template<typename T>
-void diff2(Param<T> out, CParam<T> in, int const dim) {
-    af::dim4 dims = out.dims();
-    // Bool for dimension
-    bool is_dim0 = dim == 0;
-    bool is_dim1 = dim == 1;
-    bool is_dim2 = dim == 2;
-    bool is_dim3 = dim == 3;
-
-    T const* const inPtr = in.get();
-    T* outPtr            = out.get();
-
-    // TODO: Improve this
-    for (dim_t l = 0; l < dims[3]; l++) {
-        for (dim_t k = 0; k < dims[2]; k++) {
-            for (dim_t j = 0; j < dims[1]; j++) {
-                for (dim_t i = 0; i < dims[0]; i++) {
-                    // Operation: out[index] = in[index + 1 * dim_size] -
-                    // in[index]
-                    int idx = getIdx(in.strides(), i, j, k, l);
-                    int jdx = getIdx(in.strides(), i + is_dim0, j + is_dim1,
-                                     k + is_dim2, l + is_dim3);
-                    int kdx =
-                        getIdx(in.strides(), i + 2 * is_dim0, j + 2 * is_dim1,
-                               k + 2 * is_dim2, l + 2 * is_dim3);
-                    int odx = getIdx(out.strides(), i, j, k, l);
-                    outPtr[odx] =
-                        inPtr[kdx] + inPtr[idx] - inPtr[jdx] - inPtr[jdx];
-                }
-            }
-        }
+void diff2Metal(Param<T> output, CParam<T> input, const int dimension) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalDiff(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.strides(), static_cast<unsigned>(dimension), true,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

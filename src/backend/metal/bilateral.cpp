@@ -10,8 +10,8 @@
 #include <bilateral.hpp>
 
 #include <Array.hpp>
+#include <err_metal.hpp>
 #include <kernel/bilateral.hpp>
-#include <metal_compute_bilateral.hpp>
 #include <platform.hpp>
 
 #include <af/dim4.hpp>
@@ -29,13 +29,12 @@ Array<outType> bilateral(const Array<inType> &in, const float &sSigma,
         static_cast<af_dtype>(af::dtype_traits<inType>::af_type);
     const af_dtype outputType =
         static_cast<af_dtype>(af::dtype_traits<outType>::af_type);
-    if (kernel::supportsMetalBilateral(inputType, outputType)) {
-        getQueue().enqueue(kernel::bilateralMetal<inType, outType>, out, in,
-                           sSigma, cSigma);
-    } else {
-        getQueue().enqueue(kernel::bilateral<outType, inType>, out, in, sSigma,
-                           cSigma);
+    if (!kernel::supportsMetalBilateral(inputType, outputType)) {
+        AF_ERROR("Bilateral filter type combination is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::bilateralMetal<inType, outType>, out, in,
+                             sSigma, cSigma);
     return out;
 }
 

@@ -8,17 +8,10 @@
  ********************************************************/
 
 #include <Array.hpp>
-#include <common/err_common.hpp>
 #include <copy.hpp>
 #include <kernel/sort_by_key.hpp>
-#include <metal_compute_sort_by_key.hpp>
-#include <platform.hpp>
 #include <queue.hpp>
-#include <range.hpp>
-#include <reorder.hpp>
 #include <sort_by_key.hpp>
-
-#include <type_traits>
 
 namespace arrayfire {
 namespace metal {
@@ -29,46 +22,16 @@ void sort_by_key(Array<Tk> &okey, Array<Tv> &oval, const Array<Tk> &ikey,
     okey = copyArray<Tk>(ikey);
     oval = copyArray<Tv>(ival);
 
-    switch (dim) {
-        case 0:
-            if constexpr (std::is_same<Tk, Tv>::value) {
-                const af_dtype type =
-                    static_cast<af_dtype>(af::dtype_traits<Tk>::af_type);
-                if (ikey.dims()[0] <= 2048 &&
-                    kernel::supportsMetalSortByKey(type)) {
-                    getQueue().enqueue(kernel::sort0ByKeyMetal<Tk>, okey, oval,
-                                       isAscending);
-                    break;
-                }
-            }
-            getQueue().enqueue(kernel::sort0ByKey<Tk, Tv>, okey, oval,
-                               isAscending);
-            break;
-        case 1:
-        case 2:
-        case 3:
-            getQueue().enqueue(kernel::sortByKeyBatched<Tk, Tv>, okey, oval,
-                               dim, isAscending);
-            break;
-        default: AF_ERROR("Not Supported", AF_ERR_NOT_SUPPORTED);
-    }
-
-    if (dim != 0) {
-        af::dim4 preorderDims = okey.dims();
-        af::dim4 reorderDims(0, 1, 2, 3);
-        reorderDims[dim] = 0;
-        preorderDims[0]  = okey.dims()[dim];
-        for (int i = 1; i <= static_cast<int>(dim); i++) {
-            reorderDims[i - 1] = i;
-            preorderDims[i]    = okey.dims()[i - 1];
-        }
-
-        okey.setDataDims(preorderDims);
-        oval.setDataDims(preorderDims);
-
-        okey = reorder<Tk>(okey, reorderDims);
-        oval = reorder<Tv>(oval, reorderDims);
-    }
+    if (dim > 3) AF_ERROR("Not Supported", AF_ERR_NOT_SUPPORTED);
+    const af_dtype keyType =
+        static_cast<af_dtype>(af::dtype_traits<Tk>::af_type);
+    const af_dtype valueType =
+        static_cast<af_dtype>(af::dtype_traits<Tv>::af_type);
+    if (!kernel::supportsMetalSortByKey(keyType, valueType))
+        AF_ERROR("Types are not supported by the Metal sort-by-key kernel",
+                 AF_ERR_NOT_SUPPORTED);
+    getQueue().enqueueNative(kernel::sortByKeyMetal<Tk, Tv>, okey, oval,
+                             static_cast<int>(dim), isAscending);
 }
 
 #define INSTANTIATE(Tk, Tv)                                        \

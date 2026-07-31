@@ -14,12 +14,94 @@
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/event.h>
+#include <limits>
 #include <memory>
 
 using std::make_unique;
 
 namespace arrayfire {
 namespace metal {
+
+namespace {
+
+void signalEvent(MTL::SharedEvent *event, const std::uint64_t value) {
+    auto commandBuffer = NS::RetainPtr(getCommandQueue().commandBuffer());
+    if (!commandBuffer) {
+        AF_ERROR("Could not create a Metal command buffer", AF_ERR_RUNTIME);
+    }
+    commandBuffer->encodeSignalEvent(event, value);
+    submitCommandBuffer(commandBuffer.get());
+    event->release();
+}
+
+void encodeWaitForEvent(MTL::SharedEvent *event, const std::uint64_t value) {
+    auto commandBuffer = NS::RetainPtr(getCommandQueue().commandBuffer());
+    if (!commandBuffer) {
+        AF_ERROR("Could not create a Metal command buffer", AF_ERR_RUNTIME);
+    }
+    commandBuffer->encodeWait(event, value);
+    submitCommandBuffer(commandBuffer.get());
+    event->release();
+}
+
+}  // namespace
+
+int MetalEventPolicy::createAndMarkEvent(MetalEventData *e) noexcept {
+    if (!e) { return -1; }
+    try {
+        MTL::Device &device = getDevice();
+        e->event            = device.newSharedEvent();
+        e->value            = 0;
+        return e->event ? 0 : -1;
+    } catch (...) { return -1; }
+}
+
+int MetalEventPolicy::markEvent(MetalEventData *e,
+                                metal::queue &stream) noexcept {
+    if (!e || !e->event) { return -1; }
+    MTL::SharedEvent *event = e->event;
+    event->retain();
+    try {
+        const std::uint64_t value = ++e->value;
+        stream.enqueueNative(signalEvent, event, value);
+        return 0;
+    } catch (...) {
+        event->release();
+        return -1;
+    }
+}
+
+int MetalEventPolicy::waitForEvent(MetalEventData *e,
+                                   metal::queue &stream) noexcept {
+    if (!e || !e->event || e->value == 0) { return -1; }
+    MTL::SharedEvent *event = e->event;
+    event->retain();
+    try {
+        stream.enqueueNative(encodeWaitForEvent, event, e->value);
+        return 0;
+    } catch (...) {
+        event->release();
+        return -1;
+    }
+}
+
+int MetalEventPolicy::syncForEvent(MetalEventData *e) noexcept {
+    if (!e || !e->event || e->value == 0) { return -1; }
+    return e->event->waitUntilSignaledValue(
+               e->value, std::numeric_limits<std::uint64_t>::max())
+               ? 0
+               : -1;
+}
+
+int MetalEventPolicy::destroyEvent(MetalEventData *e) noexcept {
+    if (e && e->event) {
+        e->event->release();
+        e->event = nullptr;
+        e->value = 0;
+    }
+    return 0;
+}
+
 /// \brief Creates a new event and marks it in the queue
 Event makeEvent(metal::queue& queue) {
     Event e;

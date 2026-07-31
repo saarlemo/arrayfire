@@ -9,14 +9,12 @@
 
 #include <Array.hpp>
 #include <kernel/scan.hpp>
-#include <metal_compute_scan.hpp>
 #include <optypes.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <scan.hpp>
 #include <af/dim4.hpp>
 #include <complex>
-#include <type_traits>
 
 using af::dim4;
 
@@ -28,55 +26,16 @@ Array<To> scan(const Array<Ti>& in, const int dim, bool inclusive_scan) {
     const dim4& dims = in.dims();
     Array<To> out    = createEmptyArray<To>(dims);
 
-    if constexpr (op == af_add_t && std::is_same<Ti, To>::value) {
-        const af_dtype type =
-            static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
-        if (inclusive_scan && kernel::supportsMetalScan(type)) {
-            getQueue().enqueue(kernel::scanMetal<Ti>, out, in, dim);
-            return out;
-        }
-    }
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    if (!kernel::supportsMetalScan(inputType, outputType))
+        AF_ERROR("Type is not supported by the Metal scan kernel",
+                 AF_ERR_NOT_SUPPORTED);
 
-    if (inclusive_scan) {
-        switch (in.ndims()) {
-            case 1:
-                kernel::scan_dim<op, Ti, To, 1, true> func1;
-                getQueue().enqueue(func1, out, 0, in, 0, dim);
-                break;
-            case 2:
-                kernel::scan_dim<op, Ti, To, 2, true> func2;
-                getQueue().enqueue(func2, out, 0, in, 0, dim);
-                break;
-            case 3:
-                kernel::scan_dim<op, Ti, To, 3, true> func3;
-                getQueue().enqueue(func3, out, 0, in, 0, dim);
-                break;
-            case 4:
-                kernel::scan_dim<op, Ti, To, 4, true> func4;
-                getQueue().enqueue(func4, out, 0, in, 0, dim);
-                break;
-        }
-    } else {
-        switch (in.ndims()) {
-            case 1:
-                kernel::scan_dim<op, Ti, To, 1, false> func1;
-                getQueue().enqueue(func1, out, 0, in, 0, dim);
-                break;
-            case 2:
-                kernel::scan_dim<op, Ti, To, 2, false> func2;
-                getQueue().enqueue(func2, out, 0, in, 0, dim);
-                break;
-            case 3:
-                kernel::scan_dim<op, Ti, To, 3, false> func3;
-                getQueue().enqueue(func3, out, 0, in, 0, dim);
-                break;
-            case 4:
-                kernel::scan_dim<op, Ti, To, 4, false> func4;
-                getQueue().enqueue(func4, out, 0, in, 0, dim);
-                break;
-        }
-    }
-
+    getQueue().enqueueNative(kernel::scanMetal<op, Ti, To>, out, in, dim,
+                             inclusive_scan);
     return out;
 }
 

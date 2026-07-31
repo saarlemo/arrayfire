@@ -1,5 +1,5 @@
 /*******************************************************
- * Copyright (c) 2014, ArrayFire
+ * Copyright (c) 2026, ArrayFire
  * All rights reserved.
  *
  * This file is distributed under 3-clause BSD license.
@@ -7,34 +7,40 @@
  * http://arrayfire.com/licenses/BSD-3-Clause
  ********************************************************/
 
-#include <Array.hpp>
-#include <kernel/shift.hpp>
-#include <metal_compute.hpp>
-#include <platform.hpp>
-#include <queue.hpp>
 #include <shift.hpp>
+
+#include <jit/ShiftNode.hpp>
+#include <types.hpp>
+
+#include <array>
+#include <memory>
+#include <string>
 
 namespace arrayfire {
 namespace metal {
 
 template<typename T>
-Array<T> shift(const Array<T> &in, const int sdims[4]) {
-    Array<T> out = createEmptyArray<T>(in.dims());
-    const af::dim4 temp(sdims[0], sdims[1], sdims[2], sdims[3]);
+Array<T> shift(const Array<T> &in, const int shifts[4]) {
+    // Shift nodes directly reference a buffer node, so materialize the input
+    // before attaching the shifted view to a larger JIT expression.
+    in.eval();
 
-    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalShift(type)) {
-        getQueue().enqueue(kernel::shiftMetal<T>, out, in, temp);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::shift<T>, out, in, temp);
+    af::dim4 outDims = in.dims();
+    std::array<int, 4> normalized{};
+    for (int dim = 0; dim < 4; ++dim) {
+        normalized[dim] =
+            -(shifts[dim] % static_cast<int>(outDims[dim])) +
+            outDims[dim] * (shifts[dim] > 0);
     }
 
-    return out;
+    auto node = std::make_shared<jit::ShiftNode>(
+        static_cast<af::dtype>(af::dtype_traits<T>::af_type),
+        std::static_pointer_cast<jit::BufferNode>(in.getNode()), normalized);
+    return createNodeArray<T>(outDims, std::move(node));
 }
 
 #define INSTANTIATE(T) \
-    template Array<T> shift<T>(const Array<T> &in, const int sdims[4]);
+    template Array<T> shift<T>(const Array<T> &in, const int shifts[4]);
 
 INSTANTIATE(float)
 INSTANTIATE(double)
@@ -49,6 +55,8 @@ INSTANTIATE(uchar)
 INSTANTIATE(char)
 INSTANTIATE(short)
 INSTANTIATE(ushort)
+
+#undef INSTANTIATE
 
 }  // namespace metal
 }  // namespace arrayfire

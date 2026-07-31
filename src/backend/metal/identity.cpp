@@ -11,7 +11,7 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
@@ -27,12 +27,11 @@ Array<T> identity(const dim4& dims) {
     Array<T> out = createEmptyArray<T>(dims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalIdentity(type)) {
-        getQueue().enqueue(kernel::identityMetal<T>, out);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::identity<T>, out);
+    if (!kernel::supportsMetalIdentity(type)) {
+        AF_ERROR("Identity type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::identityMetal<T>, out);
 
     return out;
 }

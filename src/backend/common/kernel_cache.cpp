@@ -83,7 +83,17 @@ Kernel getKernel(const string& kernelName, span<const common::Source> sources,
     // instead.
     size_t moduleKeyCache = 0;
     if (sourceIsJIT) {
+#if defined(AF_METAL)
+        // Metal JIT kernels all have the same entry-point name. Keying them by
+        // that name, as CUDA does for its uniquely named JIT entry points,
+        // would alias distinct generated MSL programs.
+        moduleKeyCache = (sources.size() == 1 && sources[0].hash)
+                             ? sources[0].hash
+                             : deterministicHash(sources);
+        moduleKeyCache = deterministicHash(options, moduleKeyCache);
+#else
         moduleKeyCache = deterministicHash(tInstance);
+#endif
     } else {
         moduleKeyCache = (sources.size() == 1 && sources[0].hash)
                              ? sources[0].hash

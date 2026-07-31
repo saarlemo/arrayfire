@@ -8,8 +8,8 @@
  ********************************************************/
 
 #include <approx.hpp>
+#include <err_metal.hpp>
 #include <kernel/approx.hpp>
-#include <metal_compute_approx.hpp>
 #include <platform.hpp>
 #include <af/dim4.hpp>
 
@@ -22,33 +22,31 @@ template<typename Ty, typename Tp>
 void approx1(Array<Ty> &yo, const Array<Ty> &yi, const Array<Tp> &xo,
              const int xdim, const Tp &xi_beg, const Tp &xi_step,
              const af_interp_type method, const float offGrid) {
-    if constexpr (std::is_same<Ty, float>::value &&
-                  std::is_same<Tp, float>::value) {
-        if (yo.isLinear() &&
-            (method == AF_INTERP_NEAREST || method == AF_INTERP_LOWER ||
-             method == AF_INTERP_LINEAR)) {
-            getQueue().enqueue(kernel::launchMetalApprox1Float, yo, yi, xo,
-                               xdim, xi_beg, xi_step, offGrid, method);
-            return;
-        }
-    }
     switch (method) {
         case AF_INTERP_NEAREST:
         case AF_INTERP_LOWER:
-            getQueue().enqueue(kernel::approx1<Ty, Tp, 1>, yo, yi, xo, xdim,
-                               xi_beg, xi_step, offGrid, method);
-            break;
         case AF_INTERP_LINEAR:
         case AF_INTERP_LINEAR_COSINE:
-            getQueue().enqueue(kernel::approx1<Ty, Tp, 2>, yo, yi, xo, xdim,
-                               xi_beg, xi_step, offGrid, method);
-            break;
         case AF_INTERP_CUBIC:
-        case AF_INTERP_CUBIC_SPLINE:
-            getQueue().enqueue(kernel::approx1<Ty, Tp, 3>, yo, yi, xo, xdim,
-                               xi_beg, xi_step, offGrid, method);
-            break;
-        default: break;
+        case AF_INTERP_CUBIC_SPLINE: break;
+        default: AF_ERROR("Unsupported interpolation type", AF_ERR_ARG);
+    }
+    if constexpr (std::is_same_v<Tp, float> &&
+                  (std::is_same_v<Ty, float> ||
+                   std::is_same_v<Ty, cfloat>)) {
+        const af_dtype valueType =
+            static_cast<af_dtype>(af::dtype_traits<Ty>::af_type);
+        const af_dtype positionType =
+            static_cast<af_dtype>(af::dtype_traits<Tp>::af_type);
+        if (!kernel::supportsMetalApprox(valueType, positionType)) {
+            AF_ERROR("Approximation type or layout is not supported by Metal",
+                     AF_ERR_NOT_SUPPORTED);
+        }
+        getQueue().enqueueNative(kernel::approx1Metal<Ty>, yo, yi, xo, xdim,
+                                 xi_beg, xi_step, offGrid, method);
+    } else {
+        AF_ERROR("Approximation type or layout is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
 }
 
@@ -58,41 +56,36 @@ void approx2(Array<Ty> &zo, const Array<Ty> &zi, const Array<Tp> &xo,
              const Array<Tp> &yo, const int ydim, const Tp &yi_beg,
              const Tp &yi_step, const af_interp_type method,
              const float offGrid) {
-    if constexpr (std::is_same<Ty, float>::value &&
-                  std::is_same<Tp, float>::value) {
-        if (zo.isLinear() &&
-            (method == AF_INTERP_NEAREST || method == AF_INTERP_LOWER ||
-             method == AF_INTERP_LINEAR || method == AF_INTERP_BILINEAR)) {
-            getQueue().enqueue(kernel::launchMetalApprox2Float, zo, zi, xo,
-                               xdim, xi_beg, xi_step, yo, ydim, yi_beg, yi_step,
-                               offGrid, method);
-            return;
-        }
-    }
     switch (method) {
         case AF_INTERP_NEAREST:
         case AF_INTERP_LOWER:
-            getQueue().enqueue(kernel::approx2<Ty, Tp, 1>, zo, zi, xo, xdim,
-                               xi_beg, xi_step, yo, ydim, yi_beg, yi_step,
-                               offGrid, method);
-            break;
         case AF_INTERP_LINEAR:
         case AF_INTERP_BILINEAR:
         case AF_INTERP_LINEAR_COSINE:
         case AF_INTERP_BILINEAR_COSINE:
-            getQueue().enqueue(kernel::approx2<Ty, Tp, 2>, zo, zi, xo, xdim,
-                               xi_beg, xi_step, yo, ydim, yi_beg, yi_step,
-                               offGrid, method);
-            break;
         case AF_INTERP_CUBIC:
         case AF_INTERP_BICUBIC:
         case AF_INTERP_CUBIC_SPLINE:
-        case AF_INTERP_BICUBIC_SPLINE:
-            getQueue().enqueue(kernel::approx2<Ty, Tp, 3>, zo, zi, xo, xdim,
-                               xi_beg, xi_step, yo, ydim, yi_beg, yi_step,
-                               offGrid, method);
-            break;
-        default: break;
+        case AF_INTERP_BICUBIC_SPLINE: break;
+        default: AF_ERROR("Unsupported interpolation type", AF_ERR_ARG);
+    }
+    if constexpr (std::is_same_v<Tp, float> &&
+                  (std::is_same_v<Ty, float> ||
+                   std::is_same_v<Ty, cfloat>)) {
+        const af_dtype valueType =
+            static_cast<af_dtype>(af::dtype_traits<Ty>::af_type);
+        const af_dtype positionType =
+            static_cast<af_dtype>(af::dtype_traits<Tp>::af_type);
+        if (!kernel::supportsMetalApprox(valueType, positionType)) {
+            AF_ERROR("Approximation type or layout is not supported by Metal",
+                     AF_ERR_NOT_SUPPORTED);
+        }
+        getQueue().enqueueNative(kernel::approx2Metal<Ty>, zo, zi, xo, xdim,
+                                 xi_beg, xi_step, yo, ydim, yi_beg, yi_step,
+                                 offGrid, method);
+    } else {
+        AF_ERROR("Approximation type or layout is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
 }
 

@@ -9,42 +9,34 @@
 
 #pragma once
 #include <Param.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalReorder(af_dtype type) noexcept;
+
+void launchMetalReorder(BufferParam output, size_t outputBytes,
+                        const af::dim4& outputDims,
+                        const af::dim4& outputStrides, BufferParam input,
+                        size_t inputBytes, const af::dim4& inputStrides,
+                        const af::dim4& reorderDims, af_dtype type);
+
 template<typename T>
-void reorder(Param<T> out, CParam<T> in, const af::dim4 oDims,
-             const af::dim4 rdims) {
-    T* outPtr      = out.get();
-    const T* inPtr = in.get();
-
-    const af::dim4 ist = in.strides();
-    const af::dim4 ost = out.strides();
-
-    dim_t ids[4] = {0};
-    for (dim_t ow = 0; ow < oDims[3]; ow++) {
-        const dim_t oW = ow * ost[3];
-        ids[rdims[3]]  = ow;
-        for (dim_t oz = 0; oz < oDims[2]; oz++) {
-            const dim_t oZW = oW + oz * ost[2];
-            ids[rdims[2]]   = oz;
-            for (dim_t oy = 0; oy < oDims[1]; oy++) {
-                const dim_t oYZW = oZW + oy * ost[1];
-                ids[rdims[1]]    = oy;
-                for (dim_t ox = 0; ox < oDims[0]; ox++) {
-                    const dim_t oIdx = oYZW + ox;
-
-                    ids[rdims[0]]    = ox;
-                    const dim_t iIdx = ids[3] * ist[3] + ids[2] * ist[2] +
-                                       ids[1] * ist[1] + ids[0];
-
-                    outPtr[oIdx] = inPtr[iIdx];
-                }
-            }
-        }
+void reorderMetal(Param<T> output, CParam<T> input, const af::dim4,
+                  const af::dim4 reorderDims) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalReorder(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.strides(), reorderDims,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

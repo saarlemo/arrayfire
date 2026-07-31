@@ -47,26 +47,18 @@ class Node;
 }  // namespace common
 }  // namespace arrayfire
 
-#if defined(AF_CPU) || defined(AF_METAL)
+#if defined(AF_CPU)
 #include <Param.hpp>
 
 namespace arrayfire {
-#if defined(AF_METAL)
-namespace metal {
-#else
 namespace cpu {
-#endif
 namespace kernel {
 
 template<typename T>
 void evalMultiple(std::vector<Param<T>> arrays,
                   std::vector<std::shared_ptr<common::Node>> output_nodes_);
 }  // namespace kernel
-#if defined(AF_METAL)
-}  // namespace metal
-#else
 }  // namespace cpu
-#endif
 }  // namespace arrayfire
 #endif
 
@@ -324,17 +316,11 @@ class Node {
         UNUSED(newDim);
     }
 
-#if defined(AF_CPU) || defined(AF_METAL)
+#if defined(AF_CPU)
     template<typename U>
-#if defined(AF_METAL)
-    friend void arrayfire::metal::kernel::evalMultiple(
-        std::vector<arrayfire::metal::Param<U>> arrays,
-        std::vector<common::Node_ptr> output_nodes_);
-#else
     friend void arrayfire::cpu::kernel::evalMultiple(
         std::vector<arrayfire::cpu::Param<U>> arrays,
         std::vector<common::Node_ptr> output_nodes_);
-#endif
 
     virtual void setShape(af::dim4 new_shape) { UNUSED(new_shape); }
 

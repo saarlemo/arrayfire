@@ -12,7 +12,7 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 
 using arrayfire::common::half;
@@ -33,12 +33,11 @@ Array<T> tile(const Array<T> &in, const af::dim4 &tileDims) {
     Array<T> out = createEmptyArray<T>(oDims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalTile(type)) {
-        getQueue().enqueue(kernel::tileMetal<T>, out, in);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::tile<T>, out, in);
+    if (!kernel::supportsMetalTile(type)) {
+        AF_ERROR("Tile type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::tileMetal<T>, out, in);
 
     return out;
 }

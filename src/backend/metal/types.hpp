@@ -9,21 +9,54 @@
 
 #pragma once
 #include <common/kernel_type.hpp>
+#include <common/traits.hpp>
+#include <af/traits.hpp>
 #include <complex>
 
 namespace arrayfire {
+namespace common {
+class half;
+}
+
 namespace metal {
 
 namespace {
 template<typename T>
 const char *shortname(bool caps = false) {
-    return caps ? "?" : "?";
+    return caps ? "X" : "x";
 }
 
 template<typename T>
 const char *getFullName() {
-    return "N/A";
+    return af::dtype_traits<T>::getName();
 }
+
+#define METAL_TYPE_NAME(TYPE, SHORT_LOWER, SHORT_UPPER, FULL) \
+    template<>                                                 \
+    inline const char *shortname<TYPE>(bool caps) {            \
+        return caps ? SHORT_UPPER : SHORT_LOWER;                \
+    }                                                           \
+    template<>                                                 \
+    inline const char *getFullName<TYPE>() {                   \
+        return FULL;                                            \
+    }
+
+METAL_TYPE_NAME(float, "s", "S", "float")
+METAL_TYPE_NAME(double, "d", "D", "double")
+METAL_TYPE_NAME(std::complex<float>, "c", "C", "float2")
+METAL_TYPE_NAME(std::complex<double>, "z", "Z", "double2")
+METAL_TYPE_NAME(int, "i", "I", "int")
+METAL_TYPE_NAME(unsigned int, "u", "U", "uint")
+METAL_TYPE_NAME(char, "j", "J", "char")
+METAL_TYPE_NAME(signed char, "a", "A", "char")
+METAL_TYPE_NAME(unsigned char, "v", "V", "uchar")
+METAL_TYPE_NAME(long long, "l", "L", "long")
+METAL_TYPE_NAME(unsigned long long, "k", "K", "ulong")
+METAL_TYPE_NAME(short, "p", "P", "short")
+METAL_TYPE_NAME(unsigned short, "q", "Q", "ushort")
+METAL_TYPE_NAME(arrayfire::common::half, "h", "H", "half")
+
+#undef METAL_TYPE_NAME
 
 }  // namespace
 

@@ -1,5 +1,5 @@
 /*******************************************************
- * Copyright (c) 2015, ArrayFire
+ * Copyright (c) 2014, ArrayFire
  * All rights reserved.
  *
  * This file is distributed under 3-clause BSD license.
@@ -9,46 +9,42 @@
 
 #pragma once
 #include <Param.hpp>
+#include <af/traits.hpp>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalIir(af_dtype type) noexcept;
+
+void launchMetalIir(BufferParam output, size_t outputBytes,
+                    const af::dim4& outputDims,
+                    const af::dim4& outputStrides, BufferParam coefficients,
+                    size_t coefficientBytes,
+                    const af::dim4& coefficientStrides, BufferParam feedback,
+                    size_t feedbackBytes, const af::dim4& feedbackDims,
+                    const af::dim4& feedbackStrides, bool feedbackBatched,
+                    af_dtype type);
+
 template<typename T>
-void iir(Param<T> y, Param<T> c, CParam<T> a) {
-    dim4 ydims = c.dims();
-    int num_a  = a.dims(0);
-
-    for (int l = 0; l < (int)ydims[3]; l++) {
-        dim_t yidx3 = l * y.strides(3);
-        dim_t cidx3 = l * c.strides(3);
-        dim_t aidx3 = l * a.strides(3);
-
-        for (int k = 0; k < (int)ydims[2]; k++) {
-            dim_t yidx2 = k * y.strides(2) + yidx3;
-            dim_t cidx2 = k * c.strides(2) + cidx3;
-            dim_t aidx2 = k * a.strides(2) + aidx3;
-
-            for (int j = 0; j < (int)ydims[1]; j++) {
-                dim_t yidx1 = j * y.strides(1) + yidx2;
-                dim_t cidx1 = j * c.strides(1) + cidx2;
-                dim_t aidx1 = j * a.strides(1) + aidx2;
-
-                std::vector<T> h_z(num_a);
-
-                const T *h_a = a.get() + (a.dims().ndims() > 1 ? aidx1 : 0);
-                T *h_c       = c.get() + cidx1;
-                T *h_y       = y.get() + yidx1;
-
-                for (int i = 0; i < (int)ydims[0]; i++) {
-                    T y = h_y[i] = (h_c[i] + h_z[0]) / h_a[0];
-                    for (int ii = 1; ii < num_a; ii++) {
-                        h_z[ii - 1] = h_z[ii] - h_a[ii] * y;
-                    }
-                }
-            }
-        }
+void iirMetal(Param<T> output, Param<T> coefficients, CParam<T> feedback) {
+    size_t coefficientElements = 1, feedbackElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        coefficientElements += static_cast<size_t>(coefficients.dims(i) - 1) *
+                               static_cast<size_t>(coefficients.strides(i));
+        feedbackElements += static_cast<size_t>(feedback.dims(i) - 1) *
+                            static_cast<size_t>(feedback.strides(i));
     }
+    const bool feedbackBatched =
+        feedback.dims(1) > 1 || feedback.dims(2) > 1 || feedback.dims(3) > 1;
+    launchMetalIir(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), coefficients.bufferParam(),
+        coefficientElements * sizeof(T), coefficients.strides(),
+        feedback.bufferParam(), feedbackElements * sizeof(T), feedback.dims(),
+        feedback.strides(), feedbackBatched,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

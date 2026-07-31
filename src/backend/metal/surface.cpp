@@ -34,7 +34,7 @@ void copy_surface(const Array<T> &P, fg_surface surface) {
     FG_CHECK(_.fg_get_surface_vertex_buffer_size(&bytes, surface));
 
     glBindBuffer(GL_ARRAY_BUFFER, buffer);
-    glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, P.get());
+    glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, P.getHostPtr());
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     CheckGL("In CopyArrayToVBO");

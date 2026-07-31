@@ -9,7 +9,7 @@
 
 #pragma once
 #include <Param.hpp>
-#include <math.hpp>
+#include <af/traits.hpp>
 
 #include <af/dim4.hpp>
 
@@ -17,48 +17,50 @@ namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalDiagonal(af_dtype type) noexcept;
+
+void launchMetalDiagCreate(BufferParam output, size_t outputBytes,
+                           const af::dim4& outputDims,
+                           const af::dim4& outputStrides, BufferParam input,
+                           size_t inputBytes, const af::dim4& inputDims,
+                           const af::dim4& inputStrides, int diagonal,
+                           af_dtype type);
+
+void launchMetalDiagExtract(BufferParam output, size_t outputBytes,
+                            const af::dim4& outputDims,
+                            const af::dim4& outputStrides, BufferParam input,
+                            size_t inputBytes, const af::dim4& inputDims,
+                            const af::dim4& inputStrides, int diagonal,
+                            af_dtype type);
+
 template<typename T>
-void diagCreate(Param<T> out, CParam<T> in, int const num) {
-    int batch = in.dims(1);
-    int size  = out.dims(0);
-
-    T const *iptr = in.get();
-    T *optr       = out.get();
-
-    for (int k = 0; k < batch; k++) {
-        for (int j = 0; j < size; j++) {
-            for (int i = 0; i < size; i++) {
-                T val = scalar<T>(0);
-                if (i == j - num) { val = (num > 0) ? iptr[i] : iptr[j]; }
-                optr[i + j * out.strides(1)] = val;
-            }
-        }
-        optr += out.strides(2);
-        iptr += in.strides(1);
+void diagCreateMetal(Param<T> output, CParam<T> input, const int diagonal) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalDiagCreate(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.dims(), input.strides(), diagonal,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 template<typename T>
-void diagExtract(Param<T> out, CParam<T> in, int const num) {
-    af::dim4 const odims = out.dims();
-    af::dim4 const idims = in.dims();
-
-    int const i_off = (num > 0) ? (num * in.strides(1)) : (-num);
-
-    for (int l = 0; l < (int)odims[3]; l++) {
-        for (int k = 0; k < (int)odims[2]; k++) {
-            const T *iptr =
-                in.get() + l * in.strides(3) + k * in.strides(2) + i_off;
-            T *optr = out.get() + l * out.strides(3) + k * out.strides(2);
-
-            for (int i = 0; i < (int)odims[0]; i++) {
-                T val = scalar<T>(0);
-                if (i < idims[0] && i < idims[1])
-                    val = iptr[i * in.strides(1) + i];
-                optr[i] = val;
-            }
-        }
+void diagExtractMetal(Param<T> output, CParam<T> input, const int diagonal) {
+    size_t inputElements = 1;
+    for (int i = 0; i < 4; ++i) {
+        inputElements += static_cast<size_t>(input.dims(i) - 1) *
+                         static_cast<size_t>(input.strides(i));
     }
+    launchMetalDiagExtract(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(T), output.dims(),
+        output.strides(), input.bufferParam(), inputElements * sizeof(T),
+        input.dims(), input.strides(), diagonal,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

@@ -202,7 +202,7 @@ int computeHomography(T* H_ptr, const float* rnd_ptr, const float* x_src_ptr,
 
     Array<T> A     = createValueArray<T>(af::dim4(9, 9), static_cast<T>(0));
     af::dim4 Adims = A.dims();
-    T* A_ptr       = A.get();
+    T* A_ptr       = A.getHostPtr();
     getQueue().sync();
 
     for (unsigned j = 0; j < 4; j++) {
@@ -230,10 +230,10 @@ int computeHomography(T* H_ptr, const float* rnd_ptr, const float* x_src_ptr,
         createValueArray<T>(af::dim4(Adims[1], Adims[1]), static_cast<T>(0));
     V.eval();
     getQueue().sync();
-    JacobiSVD<T, 9, 9>(A.get(), V.get());
+    JacobiSVD<T, 9, 9>(A.getHostPtr(), V.getHostPtr());
 
     dim4 Vdims = V.dims();
-    T* V_ptr   = V.get();
+    T* V_ptr   = V.getHostPtr();
 
     array<T, 9> vH{};
     for (unsigned j = 0; j < 9; j++) { vH[j] = V_ptr[8 * Vdims[0] + j]; }
@@ -270,10 +270,10 @@ int findBestHomography(Array<T>& bestH, const Array<float>& x_src,
                        const Array<float>& y_dst, const Array<float>& rnd,
                        const unsigned iterations, const unsigned nsamples,
                        const float inlier_thr, const af_homography_type htype) {
-    const float* x_src_ptr = x_src.get();
-    const float* y_src_ptr = y_src.get();
-    const float* x_dst_ptr = x_dst.get();
-    const float* y_dst_ptr = y_dst.get();
+    const float* x_src_ptr = x_src.getHostPtr();
+    const float* y_src_ptr = y_src.getHostPtr();
+    const float* x_dst_ptr = x_dst.getHostPtr();
+    const float* y_dst_ptr = y_dst.getHostPtr();
 
     Array<T> H =
         createValueArray<T>(af::dim4(9, iterations), static_cast<T>(0));
@@ -290,10 +290,10 @@ int findBestHomography(Array<T>& bestH, const Array<float>& x_src,
 
     for (unsigned i = 0; i < iter; i++) {
         const unsigned Hidx = Hdims[0] * i;
-        T* H_ptr            = H.get() + Hidx;
+        T* H_ptr            = H.getHostPtr() + Hidx;
 
         const unsigned ridx  = rdims[0] * i;
-        const float* rnd_ptr = rnd.get() + ridx;
+        const float* rnd_ptr = rnd.getHostPtr() + ridx;
 
         if (computeHomography<T>(H_ptr, rnd_ptr, x_src_ptr, y_src_ptr,
                                  x_dst_ptr, y_dst_ptr)) {
@@ -354,7 +354,7 @@ int findBestHomography(Array<T>& bestH, const Array<float>& x_src,
         }
     }
 
-    memcpy(bestH.get(), H.get() + bestIdx * 9, 9 * sizeof(T));
+    memcpy(bestH.getHostPtr(), H.getHostPtr() + bestIdx * 9, 9 * sizeof(T));
 
     if (htype == AF_HOMOGRAPHY_LMEDS) {
         float sigma =
@@ -362,7 +362,7 @@ int findBestHomography(Array<T>& bestH, const Array<float>& x_src,
                     static_cast<float>(sqrt(minMedian)),
                 1e-6f);
         float dist_thr = sq(2.5f * sigma);
-        T* bestH_ptr   = bestH.get();
+        T* bestH_ptr   = bestH.getHostPtr();
 
         for (unsigned j = 0; j < nsamples; j++) {
             float z = bestH_ptr[6] * x_src_ptr[j] +

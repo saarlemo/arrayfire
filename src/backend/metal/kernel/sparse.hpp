@@ -8,168 +8,107 @@
  ********************************************************/
 
 #pragma once
+
 #include <Param.hpp>
-#include <kernel/sort_helper.hpp>
-#include <math.hpp>
-#include <utility.hpp>
-#include <algorithm>
-#include <tuple>
+#include <af/traits.hpp>
+
+#include <cstddef>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+bool supportsMetalSparse(af_dtype type) noexcept;
+
+void launchMetalDenseToCsr(BufferParam values, size_t valuesBytes,
+                           BufferParam rowIdx, size_t rowIdxBytes,
+                           BufferParam colIdx, size_t colIdxBytes,
+                           BufferParam input, size_t inputBytes,
+                           const af::dim4& inputDims,
+                           const af::dim4& inputStrides, size_t nonzeros,
+                           af_dtype type);
+
+void launchMetalCsrToCoo(BufferParam outputValues, size_t outputValuesBytes,
+                         BufferParam outputRows, size_t outputRowsBytes,
+                         BufferParam outputColumns, size_t outputColumnsBytes,
+                         BufferParam inputValues, size_t inputValuesBytes,
+                         BufferParam inputRows, size_t inputRowsBytes,
+                         BufferParam inputColumns, size_t inputColumnsBytes,
+                         size_t nonzeros, size_t rows, af_dtype type);
+
+void launchMetalCooToCsr(BufferParam outputValues, size_t outputValuesBytes,
+                         BufferParam outputRowIdx, size_t outputRowIdxBytes,
+                         BufferParam outputColumns, size_t outputColumnsBytes,
+                         BufferParam inputValues, size_t inputValuesBytes,
+                         BufferParam inputRows, size_t inputRowsBytes,
+                         BufferParam inputColumns, size_t inputColumnsBytes,
+                         BufferParam cursor, size_t cursorBytes, size_t rows,
+                         size_t nonzeros, af_dtype type);
+
+void launchMetalSparseToDense(BufferParam output, size_t outputBytes,
+                              BufferParam values, size_t valuesBytes,
+                              BufferParam rows, size_t rowsBytes,
+                              BufferParam columns, size_t columnsBytes,
+                              const af::dim4& outputDims,
+                              const af::dim4& outputStrides, bool csr,
+                              af_dtype type);
+
 template<typename T>
-void coo2dense(Param<T> output, CParam<T> values, CParam<int> rowIdx,
-               CParam<int> colIdx) {
-    const T *vPtr   = values.get();
-    const int *rPtr = rowIdx.get();
-    const int *cPtr = colIdx.get();
-
-    T *outPtr = output.get();
-
-    af::dim4 ostrides = output.strides();
-
-    int nNZ = values.dims(0);
-    for (int i = 0; i < nNZ; i++) {
-        T v   = vPtr[i];
-        int r = rPtr[i];
-        int c = cPtr[i];
-
-        int offset = r + c * ostrides[1];
-
-        outPtr[offset] = v;
-    }
+void sparseDenseToCsrMetal(Param<T> values, Param<int> rowIdx,
+                           Param<int> colIdx, CParam<T> input) {
+    launchMetalDenseToCsr(
+        values.bufferParam(), static_cast<size_t>(values.dims().elements()) * sizeof(T),
+        rowIdx.bufferParam(), static_cast<size_t>(rowIdx.dims().elements()) * sizeof(int),
+        colIdx.bufferParam(), static_cast<size_t>(colIdx.dims().elements()) * sizeof(int),
+        input.bufferParam(), static_cast<size_t>(input.dims().elements()) * sizeof(T),
+        input.dims(), input.strides(), static_cast<size_t>(values.dims().elements()),
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 template<typename T>
-void dense2csr(Param<T> values, Param<int> rowIdx, Param<int> colIdx,
-               CParam<T> in) {
-    const T *iPtr = in.get();
-    T *vPtr       = values.get();
-    int *rPtr     = rowIdx.get();
-    int *cPtr     = colIdx.get();
-
-    int stride    = in.strides(1);
-    af::dim4 dims = in.dims();
-
-    int offset = 0;
-    for (int i = 0; i < dims[0]; ++i) {
-        rPtr[i] = offset;
-        for (int j = 0; j < dims[1]; ++j) {
-            if (iPtr[j * stride + i] != scalar<T>(0)) {
-                vPtr[offset]   = iPtr[j * stride + i];
-                cPtr[offset++] = j;
-            }
-        }
-    }
-    rPtr[dims[0]] = offset;
+void sparseCsrToCooMetal(Param<T> outputValues, Param<int> outputRows,
+                         Param<int> outputColumns, CParam<T> inputValues,
+                         CParam<int> inputRows, CParam<int> inputColumns) {
+    launchMetalCsrToCoo(
+        outputValues.bufferParam(), static_cast<size_t>(outputValues.dims().elements()) * sizeof(T),
+        outputRows.bufferParam(), static_cast<size_t>(outputRows.dims().elements()) * sizeof(int),
+        outputColumns.bufferParam(), static_cast<size_t>(outputColumns.dims().elements()) * sizeof(int),
+        inputValues.bufferParam(), static_cast<size_t>(inputValues.dims().elements()) * sizeof(T),
+        inputRows.bufferParam(), static_cast<size_t>(inputRows.dims().elements()) * sizeof(int),
+        inputColumns.bufferParam(), static_cast<size_t>(inputColumns.dims().elements()) * sizeof(int),
+        static_cast<size_t>(inputValues.dims().elements()),
+        static_cast<size_t>(inputRows.dims(0) - 1),
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 template<typename T>
-void csr2dense(Param<T> out, CParam<T> values, CParam<int> rowIdx,
-               CParam<int> colIdx) {
-    T *oPtr         = out.get();
-    const T *vPtr   = values.get();
-    const int *rPtr = rowIdx.get();
-    const int *cPtr = colIdx.get();
-
-    int stride = out.strides(1);
-
-    int r = rowIdx.dims(0);
-    for (int i = 0; i < r - 1; i++) {
-        for (int ii = rPtr[i]; ii < rPtr[i + 1]; ++ii) {
-            int j                = cPtr[ii];
-            T v                  = vPtr[ii];
-            oPtr[j * stride + i] = v;
-        }
-    }
-}
-
-// Modified code from sort helper
-template<typename T>
-using SpKeyIndexPair =
-    std::tuple<int, T, int>;  // sorting index, value, other index
-
-template<typename T>
-struct SpKIPCompareK {
-    bool operator()(const SpKeyIndexPair<T> &lhs,
-                    const SpKeyIndexPair<T> &rhs) {
-        int lhsVal = std::get<0>(lhs);
-        int rhsVal = std::get<0>(rhs);
-        // Always returns ascending
-        return (lhsVal < rhsVal);
-    }
-};
-
-template<typename T>
-void csr2coo(Param<T> ovalues, Param<int> orowIdx, Param<int> ocolIdx,
-             CParam<T> ivalues, CParam<int> irowIdx, CParam<int> icolIdx) {
-    // First calculate the linear index
-    T *ovPtr   = ovalues.get();
-    int *orPtr = orowIdx.get();
-    int *ocPtr = ocolIdx.get();
-
-    const T *ivPtr   = ivalues.get();
-    const int *irPtr = irowIdx.get();
-    const int *icPtr = icolIdx.get();
-
-    // Create cordinate form of the row array
-    for (int i = 0; i < (int)irowIdx.dims().elements() - 1; i++) {
-        std::fill_n(orPtr + irPtr[i], irPtr[i + 1] - irPtr[i], i);
-    }
-
-    // Sort the coordinate form using column index
-    // Uses code from sort_by_key kernels
-    typedef SpKeyIndexPair<T> CurrentPair;
-    int size = ovalues.dims(0);
-    std::vector<CurrentPair> pairKeyVal(size);
-
-    for (int x = 0; x < size; x++) {
-        pairKeyVal[x] = std::make_tuple(icPtr[x], ivPtr[x], orPtr[x]);
-    }
-
-    std::stable_sort(pairKeyVal.begin(), pairKeyVal.end(), SpKIPCompareK<T>());
-
-    for (int x = 0; x < (int)ovalues.dims().elements(); x++) {
-        std::tie(ocPtr[x], ovPtr[x], orPtr[x]) = pairKeyVal[x];
-    }
+void sparseCooToCsrMetal(Param<T> outputValues, Param<int> outputRowIdx,
+                         Param<int> outputColumns, CParam<T> inputValues,
+                         CParam<int> inputRows, CParam<int> inputColumns,
+                         Param<int> cursor) {
+    launchMetalCooToCsr(
+        outputValues.bufferParam(), static_cast<size_t>(outputValues.dims().elements()) * sizeof(T),
+        outputRowIdx.bufferParam(), static_cast<size_t>(outputRowIdx.dims().elements()) * sizeof(int),
+        outputColumns.bufferParam(), static_cast<size_t>(outputColumns.dims().elements()) * sizeof(int),
+        inputValues.bufferParam(), static_cast<size_t>(inputValues.dims().elements()) * sizeof(T),
+        inputRows.bufferParam(), static_cast<size_t>(inputRows.dims().elements()) * sizeof(int),
+        inputColumns.bufferParam(), static_cast<size_t>(inputColumns.dims().elements()) * sizeof(int),
+        cursor.bufferParam(), static_cast<size_t>(cursor.dims().elements()) * sizeof(int),
+        static_cast<size_t>(outputRowIdx.dims(0) - 1),
+        static_cast<size_t>(inputValues.dims().elements()),
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 template<typename T>
-void coo2csr(Param<T> ovalues, Param<int> orowIdx, Param<int> ocolIdx,
-             CParam<T> ivalues, CParam<int> irowIdx, CParam<int> icolIdx) {
-    T *ovPtr   = ovalues.get();
-    int *orPtr = orowIdx.get();
-    int *ocPtr = ocolIdx.get();
-
-    const T *ivPtr   = ivalues.get();
-    const int *irPtr = irowIdx.get();
-    const int *icPtr = icolIdx.get();
-
-    // Sort the colidx and values based on rowIdx
-    // Uses code from sort_by_key kernels
-    typedef SpKeyIndexPair<T> CurrentPair;
-    int size = ovalues.dims(0);
-    std::vector<CurrentPair> pairKeyVal(size);
-
-    for (int x = 0; x < size; x++) {
-        pairKeyVal[x] = std::make_tuple(irPtr[x], ivPtr[x], icPtr[x]);
-    }
-
-    std::stable_sort(pairKeyVal.begin(), pairKeyVal.end(), SpKIPCompareK<T>());
-
-    ovPtr[0] = 0;
-    for (int x = 0; x < (int)ovalues.dims().elements(); x++) {
-        int row = -2;  // Some value that will make orPtr[row + 1] error out
-        std::tie(row, ovPtr[x], ocPtr[x]) = pairKeyVal[x];
-        orPtr[row + 1]++;
-    }
-
-    // Compress row storage
-    for (int x = 1; x < (int)orowIdx.dims().elements(); x++) {
-        orPtr[x] += orPtr[x - 1];
-    }
+void sparseToDenseMetal(Param<T> output, CParam<T> values,
+                        CParam<int> rows, CParam<int> columns, bool csr) {
+    launchMetalSparseToDense(
+        output.bufferParam(), static_cast<size_t>(output.dims().elements()) * sizeof(T),
+        values.bufferParam(), static_cast<size_t>(values.dims().elements()) * sizeof(T),
+        rows.bufferParam(), static_cast<size_t>(rows.dims().elements()) * sizeof(int),
+        columns.bufferParam(), static_cast<size_t>(columns.dims().elements()) * sizeof(int),
+        output.dims(), output.strides(), csr,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
 }
 
 }  // namespace kernel

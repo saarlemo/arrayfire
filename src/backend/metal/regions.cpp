@@ -11,7 +11,6 @@
 #include <err_metal.hpp>
 #include <kernel/regions.hpp>
 #include <math.hpp>
-#include <metal_compute_regions.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <regions.hpp>
@@ -19,8 +18,6 @@
 #include <algorithm>
 #include <map>
 #include <set>
-#include <type_traits>
-
 using af::dim4;
 
 namespace arrayfire {
@@ -29,10 +26,12 @@ namespace metal {
 template<typename T>
 Array<T> regions(const Array<char> &in, af_connectivity connectivity) {
     Array<T> out = createValueArray(in.dims(), static_cast<T>(0));
-    if constexpr (std::is_same<T, float>::value)
-        getQueue().enqueue(kernel::regionsMetal, out, in, connectivity);
-    else
-        getQueue().enqueue(kernel::regions<T>, out, in, connectivity);
+    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalRegions(type)) {
+        AF_ERROR("Regions output type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::regionsMetal<T>, out, in, connectivity);
 
     return out;
 }

@@ -10,7 +10,7 @@
 #include <lookup.hpp>
 
 #include <common/half.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <cstdlib>
@@ -34,14 +34,12 @@ Array<in_t> lookup(const Array<in_t> &input, const Array<idx_t> &indices,
         static_cast<af_dtype>(af::dtype_traits<in_t>::af_type);
     const af_dtype indexType =
         static_cast<af_dtype>(af::dtype_traits<idx_t>::af_type);
-    if (kernel::supportsMetalLookup(inputType, indexType)) {
-        getQueue().enqueue(kernel::lookupMetal<in_t, idx_t>, out, input,
-                           indices, dim);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::lookup<in_t, idx_t>, out, input, indices,
-                           dim);
+    if (!kernel::supportsMetalLookup(inputType, indexType)) {
+        AF_ERROR("Lookup type combination is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::lookupMetal<in_t, idx_t>, out, input,
+                             indices, dim);
 
     return out;
 }

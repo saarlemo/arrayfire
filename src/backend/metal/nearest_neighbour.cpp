@@ -11,7 +11,6 @@
 #include <err_metal.hpp>
 #include <kernel/nearest_neighbour.hpp>
 #include <math.hpp>
-#include <metal_compute_nearest_neighbour.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <topk.hpp>
@@ -41,26 +40,13 @@ void nearest_neighbour(Array<uint>& idx, Array<To>& dist, const Array<T>& query,
         static_cast<af_dtype>(af::dtype_traits<T>::af_type);
     const af_dtype outputType =
         static_cast<af_dtype>(af::dtype_traits<To>::af_type);
-    if (kernel::supportsMetalNearestNeighbour(inputType, outputType,
-                                              dist_type)) {
-        getQueue().enqueue(kernel::nearestNeighbourMetal<T, To>, tmp_dists,
-                           query, train, dist_dim, dist_type);
-    } else
-        switch (dist_type) {
-            case AF_SAD:
-                getQueue().enqueue(kernel::nearest_neighbour<T, To, AF_SAD>,
-                                   tmp_dists, query, train, dist_dim);
-                break;
-            case AF_SSD:
-                getQueue().enqueue(kernel::nearest_neighbour<T, To, AF_SSD>,
-                                   tmp_dists, query, train, dist_dim);
-                break;
-            case AF_SHD:
-                getQueue().enqueue(kernel::nearest_neighbour<T, To, AF_SHD>,
-                                   tmp_dists, query, train, dist_dim);
-                break;
-            default: AF_ERROR("Unsupported dist_type", AF_ERR_NOT_CONFIGURED);
-        }
+    if (!kernel::supportsMetalNearestNeighbour(inputType, outputType,
+                                               dist_type)) {
+        AF_ERROR("Nearest-neighbour type combination is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::nearestNeighbourMetal<T, To>, tmp_dists,
+                             query, train, dist_dim, dist_type);
 
     metal::topk(dist, idx, tmp_dists, n_dist, 0, AF_TOPK_MIN);
 }

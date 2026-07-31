@@ -11,8 +11,7 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
-#include <math.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 
@@ -29,12 +28,11 @@ Array<T> iota(const dim4 &dims, const dim4 &tile_dims) {
     Array<T> out = createEmptyArray<T>(outdims);
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalIota(type)) {
-        getQueue().enqueue(kernel::iotaMetal<T>, out, dims);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::iota<T>, out, dims);
+    if (!kernel::supportsMetalIota(type)) {
+        AF_ERROR("Iota type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::iotaMetal<T>, out, dims);
 
     return out;
 }

@@ -8,8 +8,8 @@
  ********************************************************/
 
 #pragma once
-
 #include <Param.hpp>
+
 #include <common/dispatch.hpp>
 #include <common/half.hpp>
 #include <err_metal.hpp>
@@ -421,6 +421,76 @@ void normalDistributionCBRNG(T *out, size_t elements,
     }
 }
 
+
+bool supportsMetalRandomUniform(af_dtype type) noexcept;
+bool supportsMetalRandomNormal(af_dtype type) noexcept;
+
+void launchMetalRandomUniform(BufferParam output, size_t outputBytes,
+                              size_t elements, unsigned long long seed,
+                              unsigned long long counter,
+                              af_random_engine_type type, af_dtype dataType);
+void launchMetalRandomNormal(BufferParam output, size_t outputBytes,
+                             size_t elements, unsigned long long seed,
+                             unsigned long long counter,
+                             af_random_engine_type type, af_dtype dataType);
+void launchMetalRandomMersenne(BufferParam output, size_t outputBytes,
+                               size_t elements, BufferParam state,
+                               BufferParam pos, BufferParam sh1,
+                               BufferParam sh2, unsigned mask,
+                               BufferParam recursionTable,
+                               BufferParam temperTable, bool normal,
+                               af_dtype dataType);
+
+void randomMersenneInitMetal(Param<uint> state, CParam<uint> table,
+                             unsigned long long seed);
+
+template<typename T>
+void randomUniformMetal(Param<T> output, const unsigned long long seed,
+                        const unsigned long long counter,
+                        const af_random_engine_type type) {
+    launchMetalRandomUniform(
+        output.bufferParam(), size_t(output.dims().elements()) * sizeof(T),
+        size_t(output.dims().elements()), seed, counter, type,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
+
+template<typename T>
+void randomNormalMetal(Param<T> output, const unsigned long long seed,
+                       const unsigned long long counter,
+                       const af_random_engine_type type) {
+    launchMetalRandomNormal(
+        output.bufferParam(), size_t(output.dims().elements()) * sizeof(T),
+        size_t(output.dims().elements()), seed, counter, type,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
+
+template<typename T>
+void randomMersenneUniformMetal(Param<T> output, CParam<uint> state,
+                                CParam<uint> pos, CParam<uint> sh1,
+                                CParam<uint> sh2, const uint mask,
+                                CParam<uint> recursionTable,
+                                CParam<uint> temperTable) {
+    launchMetalRandomMersenne(
+        output.bufferParam(), size_t(output.dims().elements()) * sizeof(T),
+        size_t(output.dims().elements()), state.bufferParam(),
+        pos.bufferParam(), sh1.bufferParam(), sh2.bufferParam(), mask,
+        recursionTable.bufferParam(), temperTable.bufferParam(), false,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
+
+template<typename T>
+void randomMersenneNormalMetal(Param<T> output, CParam<uint> state,
+                               CParam<uint> pos, CParam<uint> sh1,
+                               CParam<uint> sh2, const uint mask,
+                               CParam<uint> recursionTable,
+                               CParam<uint> temperTable) {
+    launchMetalRandomMersenne(
+        output.bufferParam(), size_t(output.dims().elements()) * sizeof(T),
+        size_t(output.dims().elements()), state.bufferParam(),
+        pos.bufferParam(), sh1.bufferParam(), sh2.bufferParam(), mask,
+        recursionTable.bufferParam(), temperTable.bufferParam(), true,
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+}
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

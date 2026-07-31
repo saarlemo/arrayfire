@@ -11,7 +11,7 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
-#include <metal_compute.hpp>
+#include <err_metal.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 
@@ -28,12 +28,11 @@ Array<T> reorder(const Array<T> &in, const af::dim4 &rdims) {
 
     Array<T> out        = createEmptyArray<T>(oDims);
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalReorder(type)) {
-        getQueue().enqueue(kernel::reorderMetal<T>, out, in, oDims, rdims);
-    } else {
-        // Apple GPUs do not expose FP64 in Metal.
-        getQueue().enqueue(kernel::reorder<T>, out, in, oDims, rdims);
+    if (!kernel::supportsMetalReorder(type)) {
+        AF_ERROR("Reorder type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::reorderMetal<T>, out, in, oDims, rdims);
     return out;
 }
 

@@ -8,7 +8,6 @@
  ********************************************************/
 
 #include <kernel/sparse.hpp>
-#include <metal_compute_sparse.hpp>
 #include <sparse.hpp>
 
 #include <stdexcept>
@@ -26,12 +25,10 @@
 #include <queue.hpp>
 #include <reduce.hpp>
 #include <where.hpp>
+#include <kernel/sort_by_key.hpp>
 
-#include <functional>
-#include <type_traits>
 
 using arrayfire::common::cast;
-using std::function;
 
 namespace arrayfire {
 namespace metal {
@@ -43,6 +40,11 @@ using arrayfire::common::SparseArray;
 template<typename T, af_storage stype>
 SparseArray<T> sparseConvertDenseToStorage(const Array<T> &in) {
     if (stype == AF_STORAGE_CSR) {
+        const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+        if (!kernel::supportsMetalSparse(type)) {
+            AF_ERROR("Metal dense-to-CSR conversion type is not supported",
+                     AF_ERR_NOT_SUPPORTED);
+        }
         uint nNZ = getScalar<uint>(reduce_all<af_notzero_t, T, uint>(in));
 
         auto sparse = createEmptySparseArray<T>(in.dims(), nNZ, stype);
@@ -52,7 +54,8 @@ SparseArray<T> sparseConvertDenseToStorage(const Array<T> &in) {
         Array<int> rowIdx = sparse.getRowIdx();
         Array<int> colIdx = sparse.getColIdx();
 
-        getQueue().enqueue(kernel::dense2csr<T>, values, rowIdx, colIdx, in);
+        getQueue().enqueueNative(kernel::sparseDenseToCsrMetal<T>, values,
+                                  rowIdx, colIdx, in);
 
         return sparse;
     } else if (stype == AF_STORAGE_COO) {
@@ -87,22 +90,17 @@ Array<T> sparseConvertStorageToDense(const SparseArray<T> &in) {
     Array<int> rowIdx = in.getRowIdx();
     Array<int> colIdx = in.getColIdx();
 
+    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalSparse(type)) {
+        AF_ERROR("Metal sparse-to-dense conversion type is not supported",
+                 AF_ERR_NOT_SUPPORTED);
+    }
     if (stype == AF_STORAGE_CSR) {
-        if constexpr (std::is_same<T, float>::value) {
-            getQueue().enqueue(kernel::sparseToDenseMetal, dense, values,
-                               rowIdx, colIdx, true);
-        } else {
-            getQueue().enqueue(kernel::csr2dense<T>, dense, values, rowIdx,
-                               colIdx);
-        }
+        getQueue().enqueueNative(kernel::sparseToDenseMetal<T>, dense, values,
+                                  rowIdx, colIdx, true);
     } else if (stype == AF_STORAGE_COO) {
-        if constexpr (std::is_same<T, float>::value) {
-            getQueue().enqueue(kernel::sparseToDenseMetal, dense, values,
-                               rowIdx, colIdx, false);
-        } else {
-            getQueue().enqueue(kernel::coo2dense<T>, dense, values, rowIdx,
-                               colIdx);
-        }
+        getQueue().enqueueNative(kernel::sparseToDenseMetal<T>, dense, values,
+                                  rowIdx, colIdx, false);
     } else {
         AF_ERROR("Metal Backend only supports CSR or COO to Dense",
                  AF_ERR_NOT_SUPPORTED);
@@ -119,22 +117,29 @@ SparseArray<T> sparseConvertStorageToStorage(const SparseArray<T> &in) {
         in.dims(), static_cast<int>(in.getNNZ()), dest);
     converted.eval();
 
-    function<void(Param<T>, Param<int>, Param<int>, CParam<T>, CParam<int>,
-                  CParam<int>)>
-        converter;
-
     if (src == AF_STORAGE_CSR && dest == AF_STORAGE_COO) {
-        converter = kernel::csr2coo<T>;
+        getQueue().enqueueNative(
+            kernel::sparseCsrToCooMetal<T>, converted.getValues(),
+            converted.getRowIdx(), converted.getColIdx(), in.getValues(),
+            in.getRowIdx(), in.getColIdx());
     } else if (src == AF_STORAGE_COO && dest == AF_STORAGE_CSR) {
-        converter = kernel::coo2csr<T>;
+        auto sortedValues = copyArray<T>(in.getValues());
+        auto sortedRows   = copyArray<int>(in.getRowIdx());
+        auto sortedCols   = copyArray<int>(in.getColIdx());
+        getQueue().enqueueNative(kernel::sortByKeyMetal<int, int>, sortedRows,
+                                 sortedCols, 0, true);
+        getQueue().enqueueNative(kernel::sortByKeyMetal<int, T>, sortedRows,
+                                 sortedValues, 0, true);
+        auto cursor = createEmptyArray<int>(dim4(in.dims()[0]));
+        getQueue().enqueueNative(
+            kernel::sparseCooToCsrMetal<T>, converted.getValues(),
+            converted.getRowIdx(), converted.getColIdx(), sortedValues,
+            sortedRows, sortedCols, cursor);
     } else {
         // Should never come here
         AF_ERROR("Metal Backend invalid conversion combination",
                  AF_ERR_NOT_SUPPORTED);
     }
-    getQueue().enqueue(converter, converted.getValues(), converted.getRowIdx(),
-                       converted.getColIdx(), in.getValues(), in.getRowIdx(),
-                       in.getColIdx());
     return converted;
 }
 

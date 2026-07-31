@@ -13,9 +13,10 @@
 
 #if defined(WITH_LINEAR_ALGEBRA)
 #include <copy.hpp>
-#include <lapack_helper.hpp>
+#include <identity.hpp>
 #include <math.hpp>
 #include <platform.hpp>
+#include <kernel/qr.hpp>
 #include <queue.hpp>
 #include <triangle.hpp>
 #include <af/dim4.hpp>
@@ -24,44 +25,6 @@ using af::dim4;
 
 namespace arrayfire {
 namespace metal {
-
-template<typename T>
-using geqrf_func_def = int (*)(ORDER_TYPE, int, int, T *, int, T *);
-
-template<typename T>
-using gqr_func_def = int (*)(ORDER_TYPE, int, int, int, T *, int, const T *);
-
-#define QR_FUNC_DEF(FUNC) \
-    template<typename T>  \
-    FUNC##_func_def<T> FUNC##_func();
-
-#define QR_FUNC(FUNC, TYPE, PREFIX)             \
-    template<>                                  \
-    FUNC##_func_def<TYPE> FUNC##_func<TYPE>() { \
-        return &LAPACK_NAME(PREFIX##FUNC);      \
-    }
-
-QR_FUNC_DEF(geqrf)
-QR_FUNC(geqrf, float, s)
-QR_FUNC(geqrf, double, d)
-QR_FUNC(geqrf, cfloat, c)
-QR_FUNC(geqrf, cdouble, z)
-
-#define GQR_FUNC_DEF(FUNC) \
-    template<typename T>   \
-    FUNC##_func_def<T> FUNC##_func();
-
-#define GQR_FUNC(FUNC, TYPE, PREFIX)            \
-    template<>                                  \
-    FUNC##_func_def<TYPE> FUNC##_func<TYPE>() { \
-        return &LAPACK_NAME(PREFIX);            \
-    }
-
-GQR_FUNC_DEF(gqr)
-GQR_FUNC(gqr, float, sorgqr)
-GQR_FUNC(gqr, double, dorgqr)
-GQR_FUNC(gqr, cfloat, cungqr)
-GQR_FUNC(gqr, cdouble, zungqr)
 
 template<typename T>
 void qr(Array<T> &q, Array<T> &r, Array<T> &t, const Array<T> &in) {
@@ -84,12 +47,9 @@ void qr(Array<T> &q, Array<T> &r, Array<T> &t, const Array<T> &in) {
 
     triangle<T>(r, q, true, false);
 
-    auto func = [=](Param<T> q, Param<T> t, int M, int N) {
-        gqr_func<T>()(AF_LAPACK_COL_MAJOR, M, M, min(M, N), q.get(),
-                      q.strides(1), t.get());
-    };
-    q.resetDims(dim4(M, M));
-    getQueue().enqueue(func, q, t, M, N);
+    Array<T> reflectors = copyArray<T>(q);
+    q                     = identity<T>(dim4(M, M));
+    getQueue().enqueueNative(kernel::qrGenerateMetal<T>, q, reflectors, t);
 }
 
 template<typename T>
@@ -99,11 +59,12 @@ Array<T> qr_inplace(Array<T> &in) {
     int N      = iDims[1];
     Array<T> t = createEmptyArray<T>(af::dim4(min(M, N), 1, 1, 1));
 
-    auto func = [=](Param<T> in, Param<T> t, int M, int N) {
-        geqrf_func<T>()(AF_LAPACK_COL_MAJOR, M, N, in.get(), in.strides(1),
-                        t.get());
-    };
-    getQueue().enqueue(func, in, t, M, N);
+    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
+    if (!kernel::supportsMetalQR(type)) {
+        AF_ERROR("Input type is not supported by the Metal QR kernel",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    getQueue().enqueueNative(kernel::qrFactorMetal<T>, in, t);
 
     return t;
 }

@@ -9,10 +9,10 @@
 
 #include <Array.hpp>
 #include <convolve.hpp>
+#include <copy.hpp>
 #include <fast.hpp>
 #include <kernel/orb.hpp>
 #include <memory.hpp>
-#include <metal_compute_orb.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <resize.hpp>
@@ -21,8 +21,6 @@
 
 #include <cmath>
 #include <cstring>
-#include <functional>
-#include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -30,13 +28,11 @@
 using af::dim4;
 using std::ceil;
 using std::floor;
-using std::function;
 using std::min;
 using std::move;
 using std::pow;
 using std::round;
 using std::sqrt;
-using std::unique_ptr;
 using std::vector;
 
 namespace arrayfire {
@@ -68,13 +64,12 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
         scl_sum += 1.f / pow(scl_fctr, static_cast<float>(i));
     }
 
-    vector<unique_ptr<float[], function<void(float*)>>> h_x_pyr(max_levels);
-    vector<unique_ptr<float[], function<void(float*)>>> h_y_pyr(max_levels);
-    vector<unique_ptr<float[], function<void(float*)>>> h_score_pyr(max_levels);
-    vector<unique_ptr<float[], function<void(float*)>>> h_ori_pyr(max_levels);
-    vector<unique_ptr<float[], function<void(float*)>>> h_size_pyr(max_levels);
-    vector<unique_ptr<unsigned[], function<void(unsigned*)>>> h_desc_pyr(
-        max_levels);
+    vector<buffer_ptr> h_x_pyr(max_levels);
+    vector<buffer_ptr> h_y_pyr(max_levels);
+    vector<buffer_ptr> h_score_pyr(max_levels);
+    vector<buffer_ptr> h_ori_pyr(max_levels);
+    vector<buffer_ptr> h_size_pyr(max_levels);
+    vector<buffer_ptr> h_desc_pyr(max_levels);
 
     vector<unsigned> feat_pyr(max_levels);
     unsigned total_feat = 0;
@@ -94,8 +89,11 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
     dim4 prev_ldims;
 
     dim4 gauss_dims(9);
-    unique_ptr<T[], function<void(T*)>> h_gauss;
     Array<T> gauss_filter = createEmptyArray<T>(dim4());
+
+    auto ref_pattern = memAlloc<int>(REF_PAT_LENGTH);
+    memcpy(bufferData<int>(ref_pattern.get()), kernel::ref_pat,
+           REF_PAT_LENGTH * sizeof(int));
 
     for (unsigned i = 0; i < max_levels; i++) {
         dim4 ldims;
@@ -141,27 +139,29 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
 
         if (lvl_feat == 0) { continue; }
 
-        float* h_x_feat = x_feat.get();
-        float* h_y_feat = y_feat.get();
-
         auto h_x_harris     = memAlloc<float>(lvl_feat);
         auto h_y_harris     = memAlloc<float>(lvl_feat);
-        auto h_score_harris = memAlloc<float>(lvl_feat);
+        Array<float> score_harris =
+            createEmptyArray<float>(dim4(lvl_feat));
 
         // Calculate Harris responses
         // Good block_size >= 7 (must be an odd number)
         unsigned usable_feat = 0;
-        kernel::harris_response<T, false>(
-            h_x_harris.get(), h_y_harris.get(), h_score_harris.get(), nullptr,
-            h_x_feat, h_y_feat, nullptr, lvl_feat, &usable_feat, lvl_img, 7,
-            0.04f, patch_size);
+        if constexpr (std::is_same<T, float>::value) {
+            kernel::orbHarrisMetal(
+                {h_x_harris.get(), 0}, {h_y_harris.get(), 0},
+                score_harris.bufferParam(), x_feat.bufferParam(),
+                y_feat.bufferParam(), lvl_feat, &usable_feat, lvl_img, 7,
+                0.04f, static_cast<unsigned>(patch_size));
+        } else {
+            AF_ERROR("Double input is not supported by the Metal ORB kernels",
+                     AF_ERR_NOT_SUPPORTED);
+        }
 
         if (usable_feat == 0) { continue; }
 
         // Sort features according to Harris responses
-        af::dim4 usable_feat_dims(usable_feat);
-        Array<float> score_harris = createDeviceDataArray<float>(
-            usable_feat_dims, h_score_harris.get());
+        score_harris.resetDims(dim4(usable_feat));
         Array<float> harris_sorted = createEmptyArray<float>(af::dim4());
         Array<unsigned> harris_idx = createEmptyArray<unsigned>(af::dim4());
 
@@ -170,33 +170,29 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
 
         usable_feat = min(usable_feat, lvl_best[i]);
 
-        if (usable_feat == 0) {
-            h_score_harris.release();
-            continue;
-        }
+        if (usable_feat == 0) { continue; }
 
         auto h_x_lvl     = memAlloc<float>(usable_feat);
         auto h_y_lvl     = memAlloc<float>(usable_feat);
         auto h_score_lvl = memAlloc<float>(usable_feat);
 
         // Keep only features with higher Harris responses
-        kernel::keep_features<T>(h_x_lvl.get(), h_y_lvl.get(),
-                                 h_score_lvl.get(), nullptr, h_x_harris.get(),
-                                 h_y_harris.get(), harris_sorted.get(),
-                                 harris_idx.get(), nullptr, usable_feat);
+        kernel::orbKeepMetal(
+            {h_x_lvl.get(), 0}, {h_y_lvl.get(), 0}, {h_score_lvl.get(), 0},
+            {h_x_harris.get(), 0}, {h_y_harris.get(), 0},
+            harris_sorted.bufferParam(), harris_idx.bufferParam(), usable_feat);
 
         auto h_ori_lvl  = memAlloc<float>(usable_feat);
         auto h_size_lvl = memAlloc<float>(usable_feat);
 
         // Compute orientation of features
         if constexpr (std::is_same<T, float>::value) {
-            kernel::orbCentroidMetal(h_x_lvl.get(), h_y_lvl.get(),
-                                     h_ori_lvl.get(), usable_feat, lvl_img,
-                                     patch_size);
+            kernel::orbCentroidMetal(
+                {h_x_lvl.get(), 0}, {h_y_lvl.get(), 0},
+                {h_ori_lvl.get(), 0}, usable_feat, lvl_img, patch_size);
         } else {
-            kernel::centroid_angle<T>(h_x_lvl.get(), h_y_lvl.get(),
-                                      h_ori_lvl.get(), usable_feat, lvl_img,
-                                      patch_size);
+            AF_ERROR("Double input is not supported by the Metal ORB kernels",
+                     AF_ERR_NOT_SUPPORTED);
         }
 
         Array<T> lvl_filt = createEmptyArray<T>(dim4());
@@ -204,12 +200,9 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
         if (blur_img) {
             // Calculate a separable Gaussian kernel, if one is not already
             // stored
-            if (!h_gauss) {
-                h_gauss = memAlloc<T>(gauss_dims[0]);
-                gaussian1D(h_gauss.get(), gauss_dims[0], 2.f);
-                gauss_filter =
-                    createDeviceDataArray<T>(gauss_dims, h_gauss.get());
-                gauss_filter.eval();
+            if (gauss_filter.isEmpty()) {
+                gauss_filter = createEmptyArray<T>(gauss_dims);
+                gaussian1D(gauss_filter.getHostPtr(), gauss_dims[0], 2.f);
             }
 
             // Filter level image with Gaussian kernel to reduce noise
@@ -222,17 +215,19 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
 
         // Compute ORB descriptors
         auto h_desc_lvl = memAlloc<unsigned>(usable_feat * 8);
-        memset(h_desc_lvl.get(), 0, usable_feat * 8 * sizeof(unsigned));
-        if (blur_img) {
-            kernel::extract_orb<T>(h_desc_lvl.get(), usable_feat, h_x_lvl.get(),
-                                   h_y_lvl.get(), h_ori_lvl.get(),
-                                   h_size_lvl.get(), lvl_filt, lvl_scl,
-                                   patch_size);
+        memset(bufferData<unsigned>(h_desc_lvl.get()), 0,
+               usable_feat * 8 * sizeof(unsigned));
+        if constexpr (std::is_same<T, float>::value) {
+            const auto image_for_descriptor = blur_img ? lvl_filt : lvl_img;
+            kernel::orbExtractMetal(
+                {h_desc_lvl.get(), 0}, {h_x_lvl.get(), 0},
+                {h_y_lvl.get(), 0}, {h_ori_lvl.get(), 0},
+                {h_size_lvl.get(), 0}, {ref_pattern.get(), 0}, usable_feat,
+                image_for_descriptor, static_cast<float>(lvl_scl),
+                static_cast<unsigned>(patch_size));
         } else {
-            kernel::extract_orb<T>(h_desc_lvl.get(), usable_feat, h_x_lvl.get(),
-                                   h_y_lvl.get(), h_ori_lvl.get(),
-                                   h_size_lvl.get(), lvl_img, lvl_scl,
-                                   patch_size);
+            AF_ERROR("Double input is not supported by the Metal ORB kernels",
+                     AF_ERR_NOT_SUPPORTED);
         }
 
         // Store results to pyramids
@@ -244,8 +239,6 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
         h_ori_pyr[i]   = move(h_ori_lvl);
         h_size_pyr[i]  = move(h_size_lvl);
         h_desc_pyr[i]  = move(h_desc_lvl);
-        h_score_harris.release();
-        h_gauss.release();
     }
 
     if (total_feat > 0) {
@@ -260,31 +253,30 @@ unsigned orb(Array<float>& x, Array<float>& y, Array<float>& score,
         size  = createEmptyArray<float>(total_feat_dims);
         desc  = createEmptyArray<uint>(desc_dims);
 
-        float* h_x     = x.get();
-        float* h_y     = y.get();
-        float* h_score = score.get();
-        float* h_ori   = ori.get();
-        float* h_size  = size.get();
-
-        unsigned* h_desc = desc.get();
-
         unsigned offset = 0;
         for (unsigned i = 0; i < max_levels; i++) {
             if (feat_pyr[i] == 0) { continue; }
 
-            if (i > 0) { offset += feat_pyr[i - 1]; }
-
-            memcpy(h_x + offset, h_x_pyr[i].get(), feat_pyr[i] * sizeof(float));
-            memcpy(h_y + offset, h_y_pyr[i].get(), feat_pyr[i] * sizeof(float));
-            memcpy(h_score + offset, h_score_pyr[i].get(),
-                   feat_pyr[i] * sizeof(float));
-            memcpy(h_ori + offset, h_ori_pyr[i].get(),
-                   feat_pyr[i] * sizeof(float));
-            memcpy(h_size + offset, h_size_pyr[i].get(),
-                   feat_pyr[i] * sizeof(float));
-
-            memcpy(h_desc + (offset * 8), h_desc_pyr[i].get(),
-                   feat_pyr[i] * 8 * sizeof(unsigned));
+            const size_t featureOffset = offset * sizeof(float);
+            const size_t featureBytes = feat_pyr[i] * sizeof(float);
+            const bool copied =
+                copyBuffer(x.getBuffer(), featureOffset, h_x_pyr[i].get(), 0,
+                           featureBytes) &&
+                copyBuffer(y.getBuffer(), featureOffset, h_y_pyr[i].get(), 0,
+                           featureBytes) &&
+                copyBuffer(score.getBuffer(), featureOffset,
+                           h_score_pyr[i].get(), 0, featureBytes) &&
+                copyBuffer(ori.getBuffer(), featureOffset, h_ori_pyr[i].get(),
+                           0, featureBytes) &&
+                copyBuffer(size.getBuffer(), featureOffset,
+                           h_size_pyr[i].get(), 0, featureBytes) &&
+                copyBuffer(desc.getBuffer(), offset * 8 * sizeof(unsigned),
+                           h_desc_pyr[i].get(), 0,
+                           feat_pyr[i] * 8 * sizeof(unsigned));
+            if (!copied) {
+                AF_ERROR("Could not copy Metal ORB buffers", AF_ERR_RUNTIME);
+            }
+            offset += feat_pyr[i];
         }
     }
 

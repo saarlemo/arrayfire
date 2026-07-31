@@ -9,9 +9,9 @@
 
 #include <Array.hpp>
 #include <convolve.hpp>
+#include <err_metal.hpp>
 #include <iir.hpp>
 #include <kernel/iir.hpp>
-#include <metal_compute_iir.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
@@ -37,11 +37,11 @@ Array<T> iir(const Array<T> &b, const Array<T> &a, const Array<T> &x) {
     Array<T> y = createEmptyArray<T>(c.dims());
 
     const af_dtype dtype = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalIir(dtype)) {
-        getQueue().enqueue(kernel::iirMetal<T>, y, c, a);
-    } else {
-        getQueue().enqueue(kernel::iir<T>, y, c, a);
+    if (!kernel::supportsMetalIir(dtype)) {
+        AF_ERROR("IIR type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::iirMetal<T>, y, c, a);
 
     return y;
 }

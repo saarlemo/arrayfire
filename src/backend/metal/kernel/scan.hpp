@@ -8,68 +8,56 @@
  ********************************************************/
 
 #pragma once
+
 #include <Param.hpp>
-#include <common/Binary.hpp>
-#include <common/Transform.hpp>
+#include <af/traits.hpp>
+#include <optypes.hpp>
+
+#include <cstddef>
+#include <cstdint>
 
 namespace arrayfire {
 namespace metal {
 namespace kernel {
 
-template<af_op_t op, typename Ti, typename To, int D, bool inclusive_scan>
-struct scan_dim {
-    void operator()(Param<To> out, dim_t outOffset, CParam<Ti> in,
-                    dim_t inOffset, const int dim) const {
-        const af::dim4 odims    = out.dims();
-        const af::dim4 ostrides = out.strides();
-        const af::dim4 istrides = in.strides();
+bool supportsMetalScan(af_dtype inputType, af_dtype outputType) noexcept;
+void launchMetalScan(BufferParam output, size_t outputBytes,
+                     const af::dim4& dims,
+                     const af::dim4& outputStrides, BufferParam input,
+                     size_t inputBytes, const af::dim4& inputStrides,
+                     int dimension, af_dtype inputType, af_dtype outputType,
+                     uint32_t operation, bool inclusive);
 
-        const int D1 = D - 1;
-        for (dim_t i = 0; i < odims[D1]; i++) {
-            scan_dim<op, Ti, To, D1, inclusive_scan> func;
-            func(out, outOffset + i * ostrides[D1], in,
-                 inOffset + i * istrides[D1], dim);
-            if (D1 == dim) break;
-        }
+template<af_op_t op>
+constexpr uint32_t scanOperation() noexcept {
+    if constexpr (op == af_add_t) {
+        return 0;
+    } else if constexpr (op == af_mul_t) {
+        return 1;
+    } else if constexpr (op == af_min_t) {
+        return 2;
+    } else if constexpr (op == af_max_t) {
+        return 3;
+    } else {
+        static_assert(op == af_notzero_t, "Unsupported Metal scan operation");
+        return 4;
     }
-};
+}
 
-template<af_op_t op, typename Ti, typename To, bool inclusive_scan>
-struct scan_dim<op, Ti, To, 0, inclusive_scan> {
-    void operator()(Param<To> output, dim_t outOffset, CParam<Ti> input,
-                    dim_t inOffset, const int dim) const {
-        const Ti* in = input.get() + inOffset;
-        To* out      = output.get() + outOffset;
-
-        const af::dim4 ostrides = output.strides();
-        const af::dim4 istrides = input.strides();
-        const af::dim4 idims    = input.dims();
-
-        dim_t istride = istrides[dim];
-        dim_t ostride = ostrides[dim];
-
-        common::Transform<Ti, To, op> transform;
-        // FIXME: Change the name to something better
-        common::Binary<To, op> scan;
-
-        To out_val = common::Binary<To, op>::init();
-        for (dim_t i = 0; i < idims[dim]; i++) {
-            To in_val = transform(in[i * istride]);
-            out_val   = scan(in_val, out_val);
-            if (!inclusive_scan) {
-                // The loop shifts the output index by 1.
-                // The last index wraps around and writes the first element.
-                if (i == (idims[dim] - 1)) {
-                    out[0] = common::Binary<To, op>::init();
-                } else {
-                    out[(i + 1) * ostride] = out_val;
-                }
-            } else {
-                out[i * ostride] = out_val;
-            }
-        }
-    }
-};
+template<af_op_t op, typename Ti, typename To>
+void scanMetal(Param<To> output, CParam<Ti> input, const int dimension,
+               const bool inclusive) {
+    const af_dtype inputType =
+        static_cast<af_dtype>(af::dtype_traits<Ti>::af_type);
+    const af_dtype outputType =
+        static_cast<af_dtype>(af::dtype_traits<To>::af_type);
+    launchMetalScan(
+        output.bufferParam(),
+        static_cast<size_t>(output.dims().elements()) * sizeof(To),
+        output.dims(), output.strides(), input.bufferParam(), sizeof(Ti),
+        input.strides(), dimension, inputType, outputType, scanOperation<op>(),
+        inclusive);
+}
 
 }  // namespace kernel
 }  // namespace metal

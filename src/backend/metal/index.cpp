@@ -11,9 +11,9 @@
 
 #include <Array.hpp>
 #include <common/half.hpp>
+#include <err_metal.hpp>
 #include <handle.hpp>
 #include <kernel/index.hpp>
-#include <metal_compute_index.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
@@ -67,18 +67,12 @@ Array<T> index(const Array<T>& in, const af_index_t idxrs[]) {
     vector<CParam<uint>> idxParams(idxArrs.begin(), idxArrs.end());
 
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    const bool sequencesOnly = std::all_of(isSeq.begin(), isSeq.end(),
-                                           [](bool value) { return value; });
-    const bool positiveSteps =
-        std::all_of(seqs.begin(), seqs.end(),
-                    [](const af_seq& sequence) { return sequence.step > 0; });
-    if (sequencesOnly && positiveSteps && kernel::supportsMetalIndex(type))
-        getQueue().enqueue(kernel::indexMetal<T>, out, in, in.getDataDims(),
-                           seqs);
-    else
-        getQueue().enqueue(kernel::index<T>, out, in, in.getDataDims(),
-                           std::move(isSeq), std::move(seqs),
-                           std::move(idxParams));
+    if (!kernel::supportsMetalIndex(type))
+        AF_ERROR("Index type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    getQueue().enqueueNative(kernel::indexMetal<T>, out, in, in.getDataDims(),
+                             std::move(isSeq), std::move(seqs),
+                             std::move(idxParams));
 
     return out;
 }

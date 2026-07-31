@@ -11,7 +11,6 @@
 #include <copy.hpp>
 #include <err_metal.hpp>
 #include <kernel/morph.hpp>
-#include <metal_compute_morph.hpp>
 #include <morph.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
@@ -41,14 +40,12 @@ Array<T> morph(const Array<T> &in, const Array<T> &mask, bool isDilation) {
     auto out = createEmptyArray<T>(odims);
     auto inp = padArrayBorders(in, lpad, upad, padType);
 
-    if (kernel::supportsMetalMorph(type)) {
-        getQueue().enqueue(kernel::morphMetal<T>, out, inp, mask, isDilation,
-                           false);
-    } else if (isDilation) {
-        getQueue().enqueue(kernel::morph<T, true>, out, inp, mask);
-    } else {
-        getQueue().enqueue(kernel::morph<T, false>, out, inp, mask);
+    if (!kernel::supportsMetalMorph(type)) {
+        AF_ERROR("Morphology type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::morphMetal<T>, out, inp, mask, isDilation,
+                             false);
 
     std::vector<af_seq> idxs(4, af_span);
     idxs[0] = af_seq{double(lpad[0]), double(lpad[0] + idims[0] - 1), 1.0};
@@ -61,14 +58,12 @@ template<typename T>
 Array<T> morph3d(const Array<T> &in, const Array<T> &mask, bool isDilation) {
     Array<T> out        = createEmptyArray<T>(in.dims());
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (kernel::supportsMetalMorph(type)) {
-        getQueue().enqueue(kernel::morphMetal<T>, out, in, mask, isDilation,
-                           true);
-    } else if (isDilation) {
-        getQueue().enqueue(kernel::morph3d<T, true>, out, in, mask);
-    } else {
-        getQueue().enqueue(kernel::morph3d<T, false>, out, in, mask);
+    if (!kernel::supportsMetalMorph(type)) {
+        AF_ERROR("3D morphology type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
     }
+    getQueue().enqueueNative(kernel::morphMetal<T>, out, in, mask, isDilation,
+                             true);
     return out;
 }
 

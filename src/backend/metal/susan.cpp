@@ -10,7 +10,6 @@
 #include <Array.hpp>
 #include <kernel/susan.hpp>
 #include <math.hpp>
-#include <metal_compute_susan.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/features.h>
@@ -36,23 +35,25 @@ unsigned susan(Array<float> &x_out, Array<float> &y_out, Array<float> &resp_out,
     auto y_corners    = createEmptyArray<float>(dim4(corner_lim));
     auto resp_corners = createEmptyArray<float>(dim4(corner_lim));
     auto response     = createEmptyArray<T>(dim4(in.elements()));
-    auto corners_found =
-        std::shared_ptr<unsigned>(memAlloc<unsigned>(1).release(), memFree);
-    corners_found.get()[0] = 0;
+    auto corners_found                      = memAlloc<unsigned>(1);
+    bufferData<unsigned>(corners_found.get())[0] = 0;
 
-    if constexpr (std::is_same<T, float>::value) {
-        getQueue().enqueue(kernel::susanResponseMetal, response, in, idims[0],
-                           idims[1], radius, diff_thr, geom_thr, edge);
+    if constexpr (std::is_same<T, double>::value) {
+        AF_ERROR("Double input is not supported by the Metal SUSAN kernel",
+                 AF_ERR_NOT_SUPPORTED);
     } else {
-        getQueue().enqueue(kernel::susan_responses<T>, response, in, idims[0],
-                           idims[1], radius, diff_thr, geom_thr, edge);
+        getQueue().enqueueNative(kernel::susanResponseMetal<T>, response, in,
+                                 idims[0], idims[1], radius, diff_thr, geom_thr,
+                                 edge);
+        getQueue().enqueueNative(
+            kernel::susanNonMax<T>, x_corners, y_corners, resp_corners,
+            response, bufferData<unsigned>(corners_found.get()), idims[0],
+            idims[1], edge, corner_lim);
     }
-    getQueue().enqueue(kernel::non_maximal<T>, x_corners, y_corners,
-                       resp_corners, corners_found, idims[0], idims[1],
-                       response, edge, corner_lim);
     getQueue().sync();
 
-    const unsigned corners_out = min((corners_found.get())[0], corner_lim);
+    const unsigned corners_out =
+        min(bufferData<unsigned>(corners_found.get())[0], corner_lim);
     if (corners_out == 0) {
         x_out    = createEmptyArray<float>(dim4());
         y_out    = createEmptyArray<float>(dim4());

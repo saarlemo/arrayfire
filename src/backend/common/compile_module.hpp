@@ -33,6 +33,9 @@ namespace common {
 ///       compiling the \p sources.
 /// - OpenCL
 ///     - The \p kInstances parameter is not used.
+/// - Metal
+///     - The \p kInstances parameter is not used. Built-in source may be
+///       replaced by an embedded precompiled metallib.
 ///
 /// \param[in] moduleKey is hash of code+options+instantiations. This is
 ///            provided by caller to avoid recomputation.
