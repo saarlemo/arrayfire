@@ -270,6 +270,10 @@ void launchSingleInputKernel(BufferParam output, const size_t outputBytes,
     UNUSED(inputBytes);
     if (!input.buffer || !output.buffer)
         AF_ERROR("Could not allocate Metal buffers", AF_ERR_NO_MEM);
+    // Pipeline creation can fail (for example, when the runtime compiler
+    // rejects a generated kernel). Do it before starting an encoder so error
+    // propagation cannot release an encoder that has not been ended.
+    auto* pipeline = metalPipeline(functionName);
     auto commandBuffer =
         NS::RetainPtr(metalCommandQueue()->commandBuffer());
     auto encoder = commandBuffer
@@ -277,7 +281,6 @@ void launchSingleInputKernel(BufferParam output, const size_t outputBytes,
                        : nullptr;
     if (!commandBuffer || !encoder)
         AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
-    auto* pipeline = metalPipeline(functionName);
     encoder->setComputePipelineState(pipeline);
     encoder->setBuffer(input.buffer, input.offset, 0);
     encoder->setBuffer(output.buffer, output.offset, 1);

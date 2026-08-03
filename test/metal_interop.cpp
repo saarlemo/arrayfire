@@ -14,7 +14,9 @@
 
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -36,6 +38,27 @@ void sendVoid(NativeObject object, const char* selector) {
     using Function = void (*)(NativeObject, SEL);
     reinterpret_cast<Function>(objc_msgSend)(object,
                                              sel_registerName(selector));
+}
+
+uint64_t sendUInt64(NativeObject object, const char* selector) {
+    using Function = uint64_t (*)(NativeObject, SEL);
+    return reinterpret_cast<Function>(objc_msgSend)(object,
+                                                    sel_registerName(selector));
+}
+
+void sendVoidUInt64(NativeObject object, const char* selector,
+                    const uint64_t value) {
+    using Function = void (*)(NativeObject, SEL, uint64_t);
+    reinterpret_cast<Function>(objc_msgSend)(object, sel_registerName(selector),
+                                             value);
+}
+
+void encodeWaitForEvent(NativeObject commandBuffer, NativeObject event,
+                        const uint64_t value) {
+    using Function = void (*)(NativeObject, SEL, NativeObject, uint64_t);
+    reinterpret_cast<Function>(objc_msgSend)(
+        commandBuffer, sel_registerName("encodeWaitForEvent:value:"), event,
+        value);
 }
 
 NativeObject newSharedBuffer(af_mtl_device device, const void* data,
@@ -146,6 +169,58 @@ TEST(MetalInterop, DevicePointerIsNativeBuffer) {
 
     ASSERT_SUCCESS(af_unlock_array(input.get()));
     ASSERT_FALSE(input.isLocked());
+}
+
+TEST(MetalInterop, DevicePointerDoesNotSynchronizeCommandQueue) {
+    selectMetalBackend();
+
+    constexpr size_t bytes = 32;
+    std::vector<unsigned char> zeros(bytes, 0);
+    MTL::Device* device = afmtl::getDevice();
+    MTL::Buffer* native = reinterpret_cast<MTL::Buffer*>(
+        newSharedBuffer(device, zeros.data(), bytes));
+    ASSERT_NE(nullptr, native);
+
+    af::array wrapped =
+        afmtl::array(af::dim4(static_cast<dim_t>(bytes)), native, u8);
+    sendVoid(reinterpret_cast<NativeObject>(native), "release");
+
+    NativeObject pool  = newAutoreleasePool();
+    NativeObject event = sendObject(reinterpret_cast<NativeObject>(device),
+                                    "newSharedEvent");
+    ASSERT_NE(nullptr, event);
+    MTL::CommandBuffer* commandBuffer = reinterpret_cast<MTL::CommandBuffer*>(
+        sendObject(reinterpret_cast<NativeObject>(afmtl::getQueue()),
+                   "commandBuffer"));
+    ASSERT_NE(nullptr, commandBuffer);
+    encodeWaitForEvent(reinterpret_cast<NativeObject>(commandBuffer), event, 1);
+    afmtl::submit(commandBuffer);
+
+    std::thread signaler([event] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        sendVoidUInt64(event, "setSignaledValue:", 1);
+    });
+
+    void* devicePointer = nullptr;
+    const af_err pointerError =
+        af_get_device_ptr(&devicePointer, wrapped.get());
+    const uint64_t status = sendUInt64(
+        reinterpret_cast<NativeObject>(commandBuffer), "status");
+    if (pointerError == AF_SUCCESS) {
+        af_unlock_array(wrapped.get());
+    }
+
+    signaler.join();
+    ASSERT_SUCCESS(pointerError);
+    ASSERT_EQ(native, devicePointer);
+    // MTLCommandBufferStatusCompleted is 4. The event cannot be signaled before
+    // the delay above, so a completed command buffer here means device-pointer
+    // access waited for the queue instead of returning asynchronously.
+    ASSERT_NE(4u, status);
+    ASSERT_SUCCESS(af_sync(-1));
+
+    sendVoid(event, "release");
+    sendVoid(pool, "release");
 }
 
 TEST(MetalInterop, SubmittedWorkParticipatesInSync) {

@@ -279,7 +279,6 @@ MTL::Buffer *Array<T>::device() {
     if (!isOwner() || getOffset() || data.use_count() > 1) {
         *this = copyArray<T>(*this);
     }
-    getQueue().sync();
     return this->getBuffer();
 }
 

@@ -63,6 +63,11 @@ when the array is a view into a larger buffer. Managed memory remains locked
 against reuse and external buffers are retained until the `BufferView` is
 destroyed.
 
+As with CUDA and OpenCL, obtaining an ArrayFire device pointer or Metal buffer
+does not wait for queued work to finish. Encode dependent native work on the
+queue returned by `afmtl::getQueue`, or call `af::sync()` before accessing a
+shared buffer from the host or from an independently managed command queue.
+
 Command buffers passed to `afmtl::submit` are committed and tracked by
 ArrayFire. This preserves ordering with ArrayFire operations and makes
 `af::sync()` wait for the custom work. Do not commit a command buffer before

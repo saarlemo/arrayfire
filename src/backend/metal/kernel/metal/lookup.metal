@@ -13,38 +13,68 @@ struct LookupParams {
     uint indexType;
 };
 
+// Metal does not support pointer reinterpret_cast. Read the index bytes
+// explicitly, then use as_type only for scalar bit reinterpretation.
+inline ushort readIndexU16(const device uchar* indices,
+                           const ulong offset) {
+    return static_cast<ushort>(indices[offset]) |
+           (static_cast<ushort>(indices[offset + 1]) << 8);
+}
+
+inline uint readIndexU32(const device uchar* indices, const ulong offset) {
+    return static_cast<uint>(indices[offset]) |
+           (static_cast<uint>(indices[offset + 1]) << 8) |
+           (static_cast<uint>(indices[offset + 2]) << 16) |
+           (static_cast<uint>(indices[offset + 3]) << 24);
+}
+
+inline ulong readIndexU64(const device uchar* indices,
+                          const ulong offset) {
+    return static_cast<ulong>(indices[offset]) |
+           (static_cast<ulong>(indices[offset + 1]) << 8) |
+           (static_cast<ulong>(indices[offset + 2]) << 16) |
+           (static_cast<ulong>(indices[offset + 3]) << 24) |
+           (static_cast<ulong>(indices[offset + 4]) << 32) |
+           (static_cast<ulong>(indices[offset + 5]) << 40) |
+           (static_cast<ulong>(indices[offset + 6]) << 48) |
+           (static_cast<ulong>(indices[offset + 7]) << 56);
+}
+
 long readIndex(const device uchar* indices, const ulong index,
                const uint type) {
     switch (type) {
         case 0:
-            return static_cast<long>(
-                reinterpret_cast<const device float*>(indices)[index]);
+            return static_cast<long>(as_type<float>(
+                readIndexU32(indices, index * 4)));
         case 1:
-            return static_cast<long>(
-                reinterpret_cast<const device int*>(indices)[index]);
+            return static_cast<long>(as_type<int>(
+                readIndexU32(indices, index * 4)));
         case 2:
-            return static_cast<long>(
-                reinterpret_cast<const device uint*>(indices)[index]);
+            return static_cast<long>(readIndexU32(indices, index * 4));
         case 3:
-            return reinterpret_cast<const device long*>(indices)[index];
+            return as_type<long>(readIndexU64(indices, index * 8));
         case 4:
-            return static_cast<long>(
-                reinterpret_cast<const device ulong*>(indices)[index]);
-        case 5:
-            return static_cast<long>(
-                reinterpret_cast<const device char*>(indices)[index]);
+            return static_cast<long>(readIndexU64(indices, index * 8));
+        case 5: {
+            const uint value = static_cast<uint>(indices[index]);
+            return (value & 0x80u) != 0
+                       ? static_cast<long>(value) - 256
+                       : static_cast<long>(value);
+        }
         case 6:
-            return static_cast<long>(
-                reinterpret_cast<const device uchar*>(indices)[index]);
-        case 7:
-            return static_cast<long>(
-                reinterpret_cast<const device short*>(indices)[index]);
+            return static_cast<long>(indices[index]);
+        case 7: {
+            const uint bits = static_cast<uint>(
+                readIndexU16(indices, index * 2));
+            return (bits & 0x8000u) != 0
+                       ? static_cast<long>(bits) - 65536
+                       : static_cast<long>(bits);
+        }
         case 8:
-            return static_cast<long>(
-                reinterpret_cast<const device ushort*>(indices)[index]);
+            return static_cast<long>(readIndexU16(indices, index * 2));
         case 9:
-            return static_cast<long>(
-                reinterpret_cast<const device half*>(indices)[index]);
+            return static_cast<long>(as_type<half>(
+                readIndexU16(indices, index * 2)));
         default:
             return 0;
     }

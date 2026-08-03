@@ -67,6 +67,11 @@ inline float2 cholSqrt(const float2 value) {
     return float2(sqrt(value.x), 0.0f);
 }
 
+inline long cholIndex(const ulong row, const ulong col,
+                      constant CholeskyParams& p) {
+    return long(row) * p.stride0 + long(col) * p.stride1;
+}
+
 template<typename T>
 inline void choleskyImpl(device T* data, device int* info,
                          constant CholeskyParams& p, const uint gid) {
@@ -77,19 +82,15 @@ inline void choleskyImpl(device T* data, device int* info,
         const ulong column = gid;
         if (column < step) return;
 
-        const auto index = [&](const ulong row, const ulong col) {
-            return long(row) * p.stride0 + long(col) * p.stride1;
-        };
-
         if (p.phase == 0) {
             if (column != step) return;
-            T diagonal = data[index(step, step)];
+            T diagonal = data[cholIndex(step, step, p)];
             T correction = T(0);
             T compensation = T(0);
             for (ulong j = 0; j < step; ++j) {
                 const T term = cholMultiply(
-                    cholConjugate(data[index(j, step)]),
-                    data[index(j, step)]);
+                    cholConjugate(data[cholIndex(j, step, p)]),
+                    data[cholIndex(j, step, p)]);
                 const T adjusted = term - compensation;
                 const T updated = correction + adjusted;
                 compensation = (updated - correction) - adjusted;
@@ -100,42 +101,38 @@ inline void choleskyImpl(device T* data, device int* info,
                 *info = int(step + 1);
                 return;
             }
-            data[index(step, step)] = cholSqrt(diagonal);
+            data[cholIndex(step, step, p)] = cholSqrt(diagonal);
         } else {
             if (column <= step) return;
-            T value = data[index(step, column)];
+            T value = data[cholIndex(step, column, p)];
             T correction = T(0);
             T compensation = T(0);
             for (ulong j = 0; j < step; ++j) {
                 const T term = cholMultiply(
-                    cholConjugate(data[index(j, step)]),
-                    data[index(j, column)]);
+                    cholConjugate(data[cholIndex(j, step, p)]),
+                    data[cholIndex(j, column, p)]);
                 const T adjusted = term - compensation;
                 const T updated = correction + adjusted;
                 compensation = (updated - correction) - adjusted;
                 correction = updated;
             }
             value -= correction;
-            value = cholDivide(value, data[index(step, step)]);
-            data[index(step, column)] = value;
+            value = cholDivide(value, data[cholIndex(step, step, p)]);
+            data[cholIndex(step, column, p)] = value;
         }
     } else {
         const ulong row = gid;
         if (row < step) return;
 
-        const auto index = [&](const ulong rowValue, const ulong colValue) {
-            return long(rowValue) * p.stride0 + long(colValue) * p.stride1;
-        };
-
         if (p.phase == 0) {
             if (row != step) return;
-            T diagonal = data[index(step, step)];
+            T diagonal = data[cholIndex(step, step, p)];
             T correction = T(0);
             T compensation = T(0);
             for (ulong j = 0; j < step; ++j) {
                 const T term = cholMultiply(
-                    data[index(step, j)],
-                    cholConjugate(data[index(step, j)]));
+                    data[cholIndex(step, j, p)],
+                    cholConjugate(data[cholIndex(step, j, p)]));
                 const T adjusted = term - compensation;
                 const T updated = correction + adjusted;
                 compensation = (updated - correction) - adjusted;
@@ -146,24 +143,24 @@ inline void choleskyImpl(device T* data, device int* info,
                 *info = int(step + 1);
                 return;
             }
-            data[index(step, step)] = cholSqrt(diagonal);
+            data[cholIndex(step, step, p)] = cholSqrt(diagonal);
         } else {
             if (row <= step) return;
-            T value = data[index(row, step)];
+            T value = data[cholIndex(row, step, p)];
             T correction = T(0);
             T compensation = T(0);
             for (ulong j = 0; j < step; ++j) {
                 const T term = cholMultiply(
-                    data[index(row, j)],
-                    cholConjugate(data[index(step, j)]));
+                    data[cholIndex(row, j, p)],
+                    cholConjugate(data[cholIndex(step, j, p)]));
                 const T adjusted = term - compensation;
                 const T updated = correction + adjusted;
                 compensation = (updated - correction) - adjusted;
                 correction = updated;
             }
             value -= correction;
-            value = cholDivide(value, data[index(step, step)]);
-            data[index(row, step)] = value;
+            value = cholDivide(value, data[cholIndex(step, step, p)]);
+            data[cholIndex(row, step, p)] = value;
         }
     }
 }
