@@ -60,7 +60,9 @@ struct MomentsParams {
     uint64_t inputDims[4];
     uint64_t outputStrides[4];
     uint64_t inputStrides[4];
+    uint64_t partialGroups;
     uint32_t moment;
+    uint32_t threadgroupSize;
 };
 
 struct HistogramParams {

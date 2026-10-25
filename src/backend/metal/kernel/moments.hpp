@@ -18,15 +18,17 @@ namespace kernel {
 
 bool supportsMetalMoments(af_dtype type) noexcept;
 
-void launchMetalMoments(BufferParam output, size_t outputBytes,
-                        const af::dim4& outputStrides, BufferParam input,
-                        size_t inputBytes, const af::dim4& inputDims,
-                        const af::dim4& inputStrides, af_moment_type moment,
-                        af_dtype type);
+void launchMetalMoments(
+    BufferParam output, size_t outputBytes, const af::dim4& outputStrides,
+    BufferParam partials, size_t partialBytes, BufferParam input,
+    size_t inputBytes, const af::dim4& inputDims,
+    const af::dim4& inputStrides, af_moment_type moment, af_dtype type,
+    size_t partialGroups, size_t threadgroupSize);
 
 template<typename T>
 void momentsMetal(Param<float> output, CParam<T> input,
-                  const af_moment_type moment) {
+                  Param<float> partials, const af_moment_type moment,
+                  const size_t partialGroups, const size_t threadgroupSize) {
     size_t inputElements = 1;
     for (int i = 0; i < 4; ++i)
         inputElements += static_cast<size_t>(input.dims(i) - 1) *
@@ -34,10 +36,12 @@ void momentsMetal(Param<float> output, CParam<T> input,
     launchMetalMoments(
         output.bufferParam(),
         static_cast<size_t>(output.dims().elements()) * sizeof(float),
-        output.strides(), input.bufferParam(), inputElements * sizeof(T),
-        input.dims(),
+        output.strides(), partials.bufferParam(),
+        static_cast<size_t>(partials.dims().elements()) * sizeof(float),
+        input.bufferParam(), inputElements * sizeof(T), input.dims(),
         input.strides(), moment,
-        static_cast<af_dtype>(af::dtype_traits<T>::af_type));
+        static_cast<af_dtype>(af::dtype_traits<T>::af_type), partialGroups,
+        threadgroupSize);
 }
 
 }  // namespace kernel

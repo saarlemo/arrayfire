@@ -9,10 +9,15 @@
 
 #include <Array.hpp>
 #include <err_metal.hpp>
+#include <kernel/dispatch_common.hpp>
 #include <kernel/moments.hpp>
+#include <kernel/metal_runtime.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/defines.h>
+#include <Metal.hpp>
+
+#include <algorithm>
 
 namespace arrayfire {
 namespace metal {
@@ -41,7 +46,22 @@ Array<float> moments(const Array<T> &in, const af_moment_type moment) {
         AF_ERROR("Moments type is not supported by Metal",
                  AF_ERR_NOT_SUPPORTED);
     }
-    getQueue().enqueueNative(kernel::momentsMetal<T>, out, in, moment);
+    const size_t plane = static_cast<size_t>(idims[0]) *
+                         static_cast<size_t>(idims[1]);
+    const auto* pipeline =
+        kernel::metalPipeline(kernel::momentsFunctionName(type));
+    const size_t threadgroupSize = static_cast<size_t>(
+        std::min<NS::UInteger>(
+            256, pipeline->maxTotalThreadsPerThreadgroup()));
+    const size_t partialGroups =
+        (plane + threadgroupSize - 1) / threadgroupSize;
+    const size_t batches = static_cast<size_t>(idims[2]) *
+                           static_cast<size_t>(idims[3]);
+    Array<float> partials = createEmptyArray<float>(dim4(
+        static_cast<dim_t>(partialGroups * moments_dim),
+        static_cast<dim_t>(batches)));
+    getQueue().enqueueNative(kernel::momentsMetal<T>, out, in, partials,
+                             moment, partialGroups, threadgroupSize);
     getQueue().sync();
     return out;
 }

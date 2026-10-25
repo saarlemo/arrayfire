@@ -241,22 +241,47 @@ void launchMetalHsvRgb(BufferParam output, const size_t outputBytes,
                             hsvRgbFunctionName(type, hsvToRgb), "HSV/RGB");
 }
 
-void launchMetalMoments(BufferParam output, const size_t outputBytes,
-                        const af::dim4& outputStrides, BufferParam input,
-                        const size_t inputBytes, const af::dim4& inputDims,
-                        const af::dim4& inputStrides,
-                        const af_moment_type moment, const af_dtype type) {
+void launchMetalMoments(
+    BufferParam output, const size_t outputBytes,
+    const af::dim4& outputStrides, BufferParam partials,
+    const size_t partialBytes, BufferParam input, const size_t inputBytes,
+    const af::dim4& inputDims, const af::dim4& inputStrides,
+    const af_moment_type moment, const af_dtype type,
+    const size_t partialGroups, const size_t threadgroupSize) {
     MomentsParams params{};
     for (int i = 0; i < 4; ++i) {
         params.inputDims[i]     = static_cast<uint64_t>(inputDims[i]);
         params.outputStrides[i] = static_cast<uint64_t>(outputStrides[i]);
         params.inputStrides[i]  = static_cast<uint64_t>(inputStrides[i]);
     }
+    params.partialGroups = static_cast<uint64_t>(partialGroups);
     params.moment = static_cast<uint32_t>(moment);
-    const af::dim4 dispatchDims(1, 1, inputDims[2], inputDims[3]);
-    launchSingleInputKernel(output, outputBytes, dispatchDims, input,
-                            inputBytes, &params, sizeof(params),
-                            momentsFunctionName(type), "moments");
+    params.threadgroupSize = static_cast<uint32_t>(threadgroupSize);
+
+    const size_t batches = static_cast<size_t>(inputDims[2]) *
+                           static_cast<size_t>(inputDims[3]);
+    const size_t stageOneThreads = partialGroups * batches * threadgroupSize;
+    launchSingleInputKernel(partials, partialBytes,
+                            af::dim4(stageOneThreads), input, inputBytes,
+                            &params, sizeof(params), momentsFunctionName(type),
+                            "moments reduction");
+
+    const auto* reducePipeline = metalPipeline("moments_reduce");
+    const size_t reduceThreadgroupSize = static_cast<size_t>(
+        std::min<NS::UInteger>(256,
+                               reducePipeline->maxTotalThreadsPerThreadgroup()));
+    params.threadgroupSize = static_cast<uint32_t>(reduceThreadgroupSize);
+    const unsigned selectedCount =
+        static_cast<unsigned>((static_cast<uint32_t>(moment) & 1U) != 0) +
+        static_cast<unsigned>((static_cast<uint32_t>(moment) & 2U) != 0) +
+        static_cast<unsigned>((static_cast<uint32_t>(moment) & 4U) != 0) +
+        static_cast<unsigned>((static_cast<uint32_t>(moment) & 8U) != 0);
+    const size_t stageTwoThreads = static_cast<size_t>(selectedCount) * batches *
+                                   reduceThreadgroupSize;
+    launchSingleInputKernel(output, outputBytes,
+                            af::dim4(stageTwoThreads), partials, partialBytes,
+                            &params, sizeof(params), "moments_reduce",
+                            "moments final reduction");
 }
 
 void launchMetalIota(BufferParam output, const size_t bytes,
