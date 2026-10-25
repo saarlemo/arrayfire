@@ -71,6 +71,7 @@ struct HistogramParams {
     float minValue;
     float maxValue;
     uint32_t linear;
+    uint32_t threadgroupSize;
 };
 
 struct MorphParams {

@@ -14,30 +14,78 @@ struct HistogramParams {
     ulong inputDims[4], outputStrides[4], inputStrides[4];
     uint bins;
     float minValue, maxValue;
-    uint linear;
+    uint linear, threadgroupSize;
 };
 
+struct HistogramZeroParams {
+    ulong count;
+};
+
+kernel void histogram_zero(device uint* output [[buffer(0)]],
+                           constant HistogramZeroParams& p [[buffer(1)]],
+                           uint gid [[thread_position_in_grid]]) {
+    if (ulong(gid) < p.count) output[gid] = 0;
+}
+
 #define DEFINE_HISTOGRAM(NAME, TYPE)                                       \
-kernel void NAME(const device TYPE* input [[buffer(0)]],                   \
-                 device uint* output [[buffer(1)]],                        \
+kernel void NAME(const device TYPE* input [[buffer(0)]],                    \
+                 device atomic_uint* output [[buffer(1)]],                 \
                  constant HistogramParams& p [[buffer(2)]],                \
-                 uint gid [[thread_position_in_grid]]) {                   \
-    const ulong batches=p.inputDims[2]*p.inputDims[3];                     \
-    if (gid>=batches) return;                                              \
-    const ulong z=gid%p.inputDims[2], w=gid/p.inputDims[2];                \
-    const ulong ii=z*p.inputStrides[2]+w*p.inputStrides[3];                \
-    const ulong oo=z*p.outputStrides[2]+w*p.outputStrides[3];              \
-    for (uint bin=0; bin<p.bins; ++bin) output[oo+bin]=0;                  \
-    const ulong count=p.inputDims[0]*p.inputDims[1];                       \
-    for (ulong i=0; i<count; ++i) {                                        \
-        const ulong index=p.linear ? i : (i%p.inputDims[0])*               \
-            p.inputStrides[0]+(i/p.inputDims[0])*p.inputStrides[1];        \
-        float scaled=(float(input[ii+index])-p.minValue)*                  \
-            float(p.bins)/(p.maxValue-p.minValue);                         \
-        int bin=int(floor(nextafter(scaled, INFINITY)));                   \
-        bin=clamp(bin,0,int(p.bins)-1);                                    \
-        output[oo+ulong(bin)]++;                                           \
-    }                                                                      \
+                 uint group [[threadgroup_position_in_grid]],              \
+                 uint tid [[thread_index_in_threadgroup]]) {               \
+    const ulong planeCount = p.inputDims[0] * p.inputDims[1];              \
+    const ulong batchCount = p.inputDims[2] * p.inputDims[3];              \
+    const ulong groupsPerBatch =                                           \
+        (planeCount + p.threadgroupSize - 1) / p.threadgroupSize;           \
+    const ulong batch = ulong(group) / groupsPerBatch;                     \
+    const ulong pixel = (ulong(group) % groupsPerBatch) *                  \
+                        p.threadgroupSize + tid;                            \
+    const bool validBatch = batch < batchCount;                            \
+    const ulong z = batch % p.inputDims[2];                                \
+    const ulong w = batch / p.inputDims[2];                                \
+    const ulong inputBase = z * p.inputStrides[2] +                         \
+                            w * p.inputStrides[3];                         \
+    const ulong outputBase = z * p.outputStrides[2] +                      \
+                             w * p.outputStrides[3];                      \
+    threadgroup atomic_uint localBins[256];                                \
+    if (p.bins <= 256) {                                                   \
+        for (uint bin = tid; bin < p.bins; bin += p.threadgroupSize)       \
+            atomic_store_explicit(&localBins[bin], 0u, memory_order_relaxed); \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                   \
+        if (validBatch && pixel < planeCount) {                            \
+            const ulong index = p.linear ? pixel : (pixel % p.inputDims[0]) * \
+                p.inputStrides[0] + (pixel / p.inputDims[0]) *             \
+                    p.inputStrides[1];                                     \
+            const float scaled = (float(input[inputBase + index]) -        \
+                                  p.minValue) * float(p.bins) /            \
+                                 (p.maxValue - p.minValue);                 \
+            int bin = int(floor(nextafter(scaled, INFINITY)));             \
+            bin = clamp(bin, 0, int(p.bins) - 1);                          \
+            atomic_fetch_add_explicit(&localBins[uint(bin)], 1u,           \
+                                      memory_order_relaxed);                \
+        }                                                                   \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                   \
+        if (validBatch) {                                                   \
+            for (uint bin = tid; bin < p.bins; bin += p.threadgroupSize) { \
+                const uint count = atomic_load_explicit(&localBins[bin],   \
+                                                        memory_order_relaxed); \
+                if (count != 0)                                            \
+                    atomic_fetch_add_explicit(                             \
+                        &output[outputBase + bin], count,                  \
+                        memory_order_relaxed);                              \
+            }                                                               \
+        }                                                                   \
+    } else if (validBatch && pixel < planeCount) {                         \
+        const ulong index = p.linear ? pixel : (pixel % p.inputDims[0]) *  \
+            p.inputStrides[0] + (pixel / p.inputDims[0]) * p.inputStrides[1]; \
+        const float scaled = (float(input[inputBase + index]) -            \
+                              p.minValue) * float(p.bins) /                \
+                             (p.maxValue - p.minValue);                     \
+        int bin = int(floor(nextafter(scaled, INFINITY)));                 \
+        bin = clamp(bin, 0, int(p.bins) - 1);                              \
+        atomic_fetch_add_explicit(&output[outputBase + ulong(bin)], 1u,    \
+                                  memory_order_relaxed);                    \
+    }                                                                       \
 }
 
 DEFINE_HISTOGRAM(histogram_float, float)

@@ -27,6 +27,14 @@ namespace arrayfire {
 namespace metal {
 namespace kernel {
 
+namespace {
+
+struct HistogramZeroParams {
+    uint64_t count;
+};
+
+}  // namespace
+
 bool supportsMetalHistogram(const af_dtype type) noexcept {
     return histogramFunctionName(type) != nullptr;
 }
@@ -47,10 +55,31 @@ void launchMetalHistogram(BufferParam output, const size_t outputBytes,
     params.minValue = static_cast<float>(minValue);
     params.maxValue = static_cast<float>(maxValue);
     params.linear   = linear;
-    const af::dim4 dispatchDims(1, 1, inputDims[2], inputDims[3]);
-    launchSingleInputKernel(output, outputBytes, dispatchDims, input,
-                            inputBytes, &params, sizeof(params),
-                            histogramFunctionName(type), "histogram");
+
+    const size_t planeCount = static_cast<size_t>(inputDims[0]) *
+                              static_cast<size_t>(inputDims[1]);
+    const size_t batchCount = static_cast<size_t>(inputDims[2]) *
+                              static_cast<size_t>(inputDims[3]);
+
+    const char* functionName = histogramFunctionName(type);
+    const auto* pipeline = metalPipeline(functionName);
+    const size_t threadgroupSize = static_cast<size_t>(
+        std::min<NS::UInteger>(256, pipeline->maxTotalThreadsPerThreadgroup()));
+    params.threadgroupSize = static_cast<uint32_t>(threadgroupSize);
+
+    HistogramZeroParams zeroParams{
+        static_cast<uint64_t>(outputBytes / sizeof(uint32_t))};
+    launchOutputKernel(output, outputBytes,
+                       static_cast<size_t>(zeroParams.count), &zeroParams,
+                       sizeof(zeroParams), "histogram_zero", "histogram zero");
+
+    const size_t groupsPerBatch =
+        (planeCount + threadgroupSize - 1) / threadgroupSize;
+    const size_t dispatchTotal =
+        groupsPerBatch * batchCount * threadgroupSize;
+    launchSingleInputKernel(output, outputBytes, af::dim4(dispatchTotal),
+                            input, inputBytes, &params, sizeof(params),
+                            functionName, "histogram");
 }
 
 bool supportsMetalMorph(const af_dtype type) noexcept {
