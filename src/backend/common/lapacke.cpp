@@ -14,6 +14,7 @@
 #include <traits.hpp>
 
 #include <algorithm>
+#include <complex>
 #include <cstdint>
 #include <vector>
 
@@ -81,6 +82,15 @@
         X##gels_(&trans, &M, &N, &nrhs, (TO)A, &lda, (TO)B, &ldb, (TO)work,    \
                  &lwork, &info);                                               \
         delete[] work;                                                         \
+        return info;                                                           \
+    }                                                                          \
+    int LAPACKE_##X##gels_work(int layout, char trans, int M, int N,          \
+                               int nrhs, T *A, int lda, T *B, int ldb,       \
+                               T *work, int lwork) {                          \
+        UNUSED(layout);                                                        \
+        int info = 0;                                                          \
+        X##gels_(&trans, &M, &N, &nrhs, (TO)A, &lda, (TO)B, &ldb, (TO)work,   \
+                 &lwork, &info);                                               \
         return info;                                                           \
     }                                                                          \
     int LAPACKE_##X##getri(int layout, int N, T *A, int lda,                   \
@@ -199,14 +209,19 @@ LAPACK_MQR_WORK(unmqr, z, cdouble, __CLPK_doublecomplex *)
         UNUSED(layout);                                                      \
         int info   = 0;                                                      \
         int max_mn = std::max(m, n);                                         \
-        int min_mn = std::max(m, n);                                         \
-        int lwork  = 5 * max_mn;                                             \
-        std::vector<T> work(lwork);                                          \
-        std::vector<int> iwork(8 * std::min(m, n));                          \
+        int min_mn = std::min(m, n);                                         \
+        int lwork  = -1;                                                     \
+        T work_param{};                                                      \
+        std::vector<int> iwork(std::max(1, 8 * min_mn));                     \
         int irwork = std::max(                                               \
             1,                                                               \
             min_mn * std::max(5 * min_mn + 7, 2 * max_mn + 2 * min_mn + 1)); \
         std::vector<Tr> rwork(irwork);                                       \
+        X##P##_(&jobz, &m, &n, (TO)in, &ldin, s, (TO)u, &ldu, (TO)vt, &ldvt, \
+                (TO)&work_param, &lwork, &rwork[0], &iwork[0], &info);      \
+        if (info != 0) { return info; }                                      \
+        lwork = std::max(1, static_cast<int>(std::real(work_param)));        \
+        std::vector<T> work(std::max(1, lwork));                             \
         X##P##_(&jobz, &m, &n, (TO)in, &ldin, s, (TO)u, &ldu, (TO)vt, &ldvt, \
                 (TO)&work[0], &lwork, &rwork[0], &iwork[0], &info);          \
         return info;                                                         \

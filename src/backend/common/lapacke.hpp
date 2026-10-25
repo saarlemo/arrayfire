@@ -25,6 +25,9 @@ using detail::cfloat;
                           int *pivot, T *B, int ldb);                          \
     int LAPACKE_##X##gels(int layout, char trans, int M, int N, int nrhs,      \
                           T *A, int lda, T *B, int ldb);                       \
+    int LAPACKE_##X##gels_work(int layout, char trans, int M, int N, int nrhs, \
+                               T *A, int lda, T *B, int ldb, T *work,        \
+                               int lwork);                                   \
     int LAPACKE_##X##getri(int layout, int N, T *A, int lda,                   \
                            const int *pivot);                                  \
     int LAPACKE_##X##trtri(int layout, char uplo, char diag, int N, T *A,      \

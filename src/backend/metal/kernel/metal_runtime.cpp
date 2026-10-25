@@ -22,7 +22,6 @@
 #include <metal_kernel_headers/canny.hpp>
 #include <metal_kernel_headers/convolve.hpp>
 #include <metal_kernel_headers/copy.hpp>
-#include <metal_kernel_headers/cholesky.hpp>
 #include <metal_kernel_headers/diagonal.hpp>
 #include <metal_kernel_headers/diff.hpp>
 #include <metal_kernel_headers/dot.hpp>
@@ -51,7 +50,6 @@
 #include <metal_kernel_headers/morph.hpp>
 #include <metal_kernel_headers/nearest_neighbour.hpp>
 #include <metal_kernel_headers/orb.hpp>
-#include <metal_kernel_headers/qr.hpp>
 #include <metal_kernel_headers/pad_borders.hpp>
 #include <metal_kernel_headers/random_engine.hpp>
 #include <metal_kernel_headers/range.hpp>
@@ -73,7 +71,6 @@
 #include <metal_kernel_headers/sparse_blas.hpp>
 #include <metal_kernel_headers/sparse_arith.hpp>
 #include <metal_kernel_headers/susan.hpp>
-#include <metal_kernel_headers/svd.hpp>
 #include <metal_kernel_headers/tile.hpp>
 #include <metal_kernel_headers/topk.hpp>
 #include <metal_kernel_headers/transform.hpp>
@@ -98,7 +95,6 @@ const std::string computeSourceStorage = [] {
     };
 
     append(copy_metal_src);
-    append(cholesky_metal_src);
     append(anisotropic_diffusion_metal_src);
     append(Array_metal_src);
     append(approx_metal_src);
@@ -138,7 +134,6 @@ const std::string computeSourceStorage = [] {
     append(medfilt_metal_src);
     append(nearest_neighbour_metal_src);
     append(orb_metal_src);
-    append(qr_metal_src);
     append(pad_borders_metal_src);
     append(diagonal_metal_src);
     append(diff_metal_src);
@@ -159,7 +154,6 @@ const std::string computeSourceStorage = [] {
     append(sparse_blas_metal_src);
     append(sparse_arith_metal_src);
     append(susan_metal_src);
-    append(svd_metal_src);
     append(transpose_metal_src);
     append(transform_metal_src);
     append(unwrap_metal_src);

@@ -84,12 +84,10 @@ set(metal_kernel_src
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/medfilt.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/nearest_neighbour.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/orb.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/qr.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/pad_borders.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diagonal.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/diff.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/dot.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/cholesky.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/flood_fill.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fast.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/fftconvolve.metal
@@ -106,7 +104,6 @@ set(metal_kernel_src
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sparse_blas.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/sparse_arith.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/susan.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/svd.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/transpose.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/transform.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/unwrap.metal
@@ -443,7 +440,6 @@ target_sources(afmetal
     jit/ShiftNode.hpp
     jit/kernel_generators.hpp
     kernel/KParam.hpp
-    kernel/cholesky.hpp
     kernel/dispatch_common.hpp
     kernel/metal_runtime.hpp
   )
@@ -459,7 +455,6 @@ target_sources(afmetal
     kernel/canny.hpp
     kernel/convolve.hpp
     kernel/copy.hpp
-    kernel/cholesky.hpp
     kernel/diagonal.hpp
     kernel/diff.hpp
     kernel/dot.hpp

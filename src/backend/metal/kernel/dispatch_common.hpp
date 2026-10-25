@@ -203,10 +203,7 @@ struct PivotParams {
     uint64_t outputCount, pivotCount;
 };
 
-// Parameters shared by the native Metal solve kernels.  The kernels operate
-// directly on ArrayFire's strided buffers; no host-side view of the data is
-// needed.  batchZ is kept separately so a linear batch id can be mapped back
-// to the third and fourth dimensions without relying on contiguous storage.
+// Parameters shared by the native Metal triangular and LU solve kernels.
 struct SolveParams {
     uint64_t rows;
     uint64_t columns;
@@ -218,31 +215,6 @@ struct SolveParams {
     uint32_t batchZ;
     uint32_t upper;
     uint32_t unit;
-};
-
-struct SolveGramParams {
-    uint64_t rows;
-    uint64_t columns;
-    uint64_t rank;
-    uint64_t rhsColumns;
-    uint64_t aStrides[4];
-    uint64_t bStrides[4];
-    uint64_t gramStrides[4];
-    uint64_t rhsStrides[4];
-    uint32_t batch;
-    uint32_t batchZ;
-    uint32_t underdetermined;
-};
-
-struct SolveExpandParams {
-    uint64_t rows;
-    uint64_t columns;
-    uint64_t rhsColumns;
-    uint64_t aStrides[4];
-    uint64_t yStrides[4];
-    uint64_t outputStrides[4];
-    uint32_t batch;
-    uint32_t batchZ;
 };
 
 struct SparseMatmulParams {
@@ -293,8 +265,6 @@ const char* rotateFunctionName(const af_dtype t);
 
 const char* luFunctionName(const af_dtype t);
 const char* luFactorFunctionName(const af_dtype t);
-const char* qrFunctionName(const af_dtype t);
-
 const char* floodFillFunctionName(const af_dtype type);
 
 const char* indexFunctionName(const af_dtype type);
@@ -937,13 +907,6 @@ const char* susanResponseFunctionName(const af_dtype type);
 
 const char* susanNonMaxFunctionName(const af_dtype type);
 
-const char* svdInitFunctionName(const af_dtype type);
-
-const char* svdStageFunctionName(const af_dtype type);
-
-const char* svdSortFunctionName(const af_dtype type);
-
-const char* svdFinalizeFunctionName(const af_dtype type);
 
 }  // namespace kernel
 }  // namespace metal

@@ -221,10 +221,6 @@ const char* luFactorFunctionName(const af_dtype t) {
                                : nullptr;
 }
 
-const char* qrFunctionName(const af_dtype t) {
-    return t == f32 ? "qr_float" : t == c32 ? "qr_cfloat" : nullptr;
-}
-
 const char* floodFillFunctionName(const af_dtype type) {
     switch (type) {
         case f32: return "flood_fill_float";
@@ -946,37 +942,6 @@ const char* susanNonMaxFunctionName(const af_dtype type) {
     }
 }
 
-const char* svdInitFunctionName(const af_dtype type) {
-    switch (type) {
-        case f32: return "svd_init_float";
-        case c32: return "svd_init_cfloat";
-        default: return nullptr;
-    }
-}
-
-const char* svdStageFunctionName(const af_dtype type) {
-    switch (type) {
-        case f32: return "svd_stage_float";
-        case c32: return "svd_stage_cfloat";
-        default: return nullptr;
-    }
-}
-
-const char* svdSortFunctionName(const af_dtype type) {
-    switch (type) {
-        case f32: return "svd_sort_float";
-        case c32: return "svd_sort_cfloat";
-        default: return nullptr;
-    }
-}
-
-const char* svdFinalizeFunctionName(const af_dtype type) {
-    switch (type) {
-        case f32: return "svd_finalize_float";
-        case c32: return "svd_finalize_cfloat";
-        default: return nullptr;
-    }
-}
 
 }  // namespace kernel
 }  // namespace metal

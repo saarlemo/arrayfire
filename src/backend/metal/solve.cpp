@@ -14,9 +14,15 @@
 #if defined(WITH_LINEAR_ALGEBRA)
 #include <copy.hpp>
 #include <kernel/solve.hpp>
+#include <lapack_helper.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
 #include <af/dim4.hpp>
+
+#include <algorithm>
+#include <complex>
+#include <string>
+#include <vector>
 
 namespace arrayfire {
 namespace metal {
@@ -24,10 +30,50 @@ namespace metal {
 namespace {
 
 template<typename T>
+using gesv_func_def = int (*)(ORDER_TYPE, int, int, T *, int, int *, T *, int);
+
+template<typename T>
+using gels_work_func_def = int (*)(ORDER_TYPE, char, int, int, int, T *, int,
+                                   T *, int, T *, int);
+
+template<typename T>
+gesv_func_def<T> gesv_func();
+
+template<typename T>
+gels_work_func_def<T> gels_work_func();
+
+#define SOLVE_LAPACK_FUNC(TYPE, PREFIX)                                      \
+    template<>                                                               \
+    gesv_func_def<TYPE> gesv_func<TYPE>() {                                  \
+        return &LAPACK_NAME(PREFIX##gesv);                                   \
+    }                                                                        \
+    template<>                                                               \
+    gels_work_func_def<TYPE> gels_work_func<TYPE>() {                        \
+        return &LAPACK_NAME(PREFIX##gels_work);                              \
+    }
+
+SOLVE_LAPACK_FUNC(float, s)
+SOLVE_LAPACK_FUNC(double, d)
+SOLVE_LAPACK_FUNC(cfloat, c)
+SOLVE_LAPACK_FUNC(cdouble, z)
+
+#undef SOLVE_LAPACK_FUNC
+
+template<typename T>
+int lapackWorkSize(const T value) {
+    return static_cast<int>(value);
+}
+
+template<typename T>
+int lapackWorkSize(const std::complex<T> value) {
+    return static_cast<int>(value.real());
+}
+
+template<typename T>
 void checkSolveType() {
     const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
     if (!kernel::supportsMetalSolve(type)) {
-        AF_ERROR("Input type is not supported by the native Metal solve kernels",
+        AF_ERROR("Input type is not supported by the Metal solve backend",
                  AF_ERR_NOT_SUPPORTED);
     }
 }
@@ -44,38 +90,89 @@ Array<T> triangleSolve(const Array<T> &a, const Array<T> &b,
 }
 
 template<typename T>
-Array<T> squareSolve(const Array<T> &a, const Array<T> &b) {
-    checkSolveType<T>();
-    Array<T> factors = copyArray<T>(a);
-    Array<T> out     = copyArray<T>(b);
-    getQueue().enqueueNative(kernel::solveGeneralMetal<T>, factors, out);
-    return out;
-}
-
-template<typename T>
-Array<T> leastSquaresSolve(const Array<T> &a, const Array<T> &b) {
-    checkSolveType<T>();
+Array<T> accelerateSolve(const Array<T> &a, const Array<T> &b) {
     const af::dim4 aDims = a.dims();
     const af::dim4 bDims = b.dims();
-    const bool underdetermined = aDims[0] < aDims[1];
-    const dim_t rank            = underdetermined ? aDims[0] : aDims[1];
+    const int M = static_cast<int>(aDims[0]);
+    const int N = static_cast<int>(aDims[1]);
+    const int NRHS = static_cast<int>(bDims[1]);
+    const int batchZ = static_cast<int>(aDims[2]);
+    const int batchW = static_cast<int>(aDims[3]);
+    const bool square = M == N;
+    const int paddedRows = std::max(M, N);
 
-    // Form the normal equations on the device.  This is deliberately kept as
-    // a sequence of native kernels so rectangular solve never materializes a
-    // host view.  The generated tests use full-rank matrices, for which the
-    // normal-equation solution reconstructs the input right-hand side.
-    Array<T> gram = createEmptyArray<T>(
-        af::dim4(rank, rank, aDims[2], aDims[3]));
-    Array<T> rhs = createEmptyArray<T>(
-        af::dim4(rank, bDims[1], aDims[2], aDims[3]));
-    Array<T> out = underdetermined
-                      ? createEmptyArray<T>(af::dim4(aDims[1], bDims[1],
-                                                     aDims[2], aDims[3]))
-                      : rhs;
-    getQueue().enqueueNative(kernel::solveLeastSquaresMetal<T>, a, b, gram,
-                             rhs, out);
+    if (M == 0 || N == 0 || NRHS == 0) {
+        return createEmptyArray<T>(af::dim4(N, NRHS, bDims[2], bDims[3]));
+    }
 
-    return out;
+    Array<T> factors = copyToLapackArray(a);
+    Array<T> output = copyToLapackArray(
+        b, af::dim4(paddedRows, NRHS, bDims[2], bDims[3]));
+
+    factors.eval();
+    output.eval();
+    getQueue().sync();
+    T *factorData = factors.getHostPtr();
+    T *rhsData = output.getHostPtr();
+    if (!factorData || !rhsData) {
+        AF_ERROR("Accelerate solve requires CPU-visible Metal storage",
+                 AF_ERR_RUNTIME);
+    }
+
+    const int lda = static_cast<int>(factors.strides()[1]);
+    const int ldb = static_cast<int>(output.strides()[1]);
+    const size_t factorBatchStrideZ = factors.strides()[2];
+    const size_t factorBatchStrideW = factors.strides()[3];
+    const size_t rhsBatchStrideZ = output.strides()[2];
+    const size_t rhsBatchStrideW = output.strides()[3];
+
+    int lwork = 0;
+    std::vector<T> work;
+    if (!square) {
+        T workQuery{};
+        const int queryInfo = gels_work_func<T>()(
+            AF_LAPACK_COL_MAJOR, 'N', M, N, NRHS, factorData, lda, rhsData,
+            ldb, &workQuery, -1);
+        if (queryInfo != 0) {
+            AF_ERROR("Accelerate LAPACK gels workspace query failed",
+                     AF_ERR_RUNTIME);
+        }
+        lwork = std::max(1, lapackWorkSize(workQuery));
+        work.resize(static_cast<size_t>(lwork));
+    }
+    std::vector<int> pivots(square ? static_cast<size_t>(N) : 0);
+
+    for (int w = 0; w < batchW; ++w) {
+        for (int z = 0; z < batchZ; ++z) {
+            T *batchFactors = factorData + factorBatchStrideZ * z +
+                              factorBatchStrideW * w;
+            T *batchRhs = rhsData + rhsBatchStrideZ * z + rhsBatchStrideW * w;
+            int info = 0;
+            if (square) {
+                info = gesv_func<T>()(AF_LAPACK_COL_MAJOR, N, NRHS,
+                                      batchFactors, lda, pivots.data(),
+                                      batchRhs, ldb);
+            } else {
+                info = gels_work_func<T>()(
+                    AF_LAPACK_COL_MAJOR, 'N', M, N, NRHS, batchFactors, lda,
+                    batchRhs, ldb, work.data(), lwork);
+            }
+            if (info != 0) {
+                const std::string message =
+                    std::string("Accelerate LAPACK ") +
+                    (square ? "gesv" : "gels") +
+                    " failed with info=" + std::to_string(info) +
+                    " at batch (" + std::to_string(z) + ", " +
+                    std::to_string(w) + ")";
+                AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+            }
+        }
+    }
+
+    if (!square) {
+        output.resetDims(af::dim4(N, NRHS, bDims[2], bDims[3]));
+    }
+    return output;
 }
 
 }  // namespace
@@ -96,8 +193,7 @@ Array<T> solve(const Array<T> &a, const Array<T> &b,
     if (options & AF_MAT_UPPER || options & AF_MAT_LOWER) {
         return triangleSolve<T>(a, b, options);
     }
-    if (a.dims()[0] == a.dims()[1]) return squareSolve<T>(a, b);
-    return leastSquaresSolve<T>(a, b);
+    return accelerateSolve<T>(a, b);
 }
 
 }  // namespace metal
