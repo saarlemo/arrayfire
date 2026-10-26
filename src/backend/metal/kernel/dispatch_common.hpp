@@ -717,10 +717,24 @@ struct CannyParams {
 };
 
 struct RegionsParams {
-    uint64_t dims[4];
-    uint64_t outputStrides[4];
-    uint64_t inputStrides[4];
+    uint64_t width;
+    uint64_t height;
+    uint64_t inputStrideX;
+    uint64_t inputStrideY;
     uint32_t connectivity;
+};
+
+struct RegionsScanParams {
+    uint64_t count;
+    uint32_t rootFlags;
+};
+
+struct RegionsCountParams {
+    uint64_t count;
+};
+
+struct RegionsValidationParams {
+    uint32_t maxLabels;
 };
 
 struct DiffusionParams {

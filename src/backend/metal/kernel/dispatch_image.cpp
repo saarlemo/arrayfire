@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -659,12 +660,23 @@ namespace {
 
 const char* regionsFunctionName(const af_dtype type) noexcept {
     switch (type) {
-        case f32: return "regions_float";
-        case s32: return "regions_int";
-        case u32: return "regions_uint";
-        case s16: return "regions_short";
-        case u16: return "regions_ushort";
+        case f32: return "regions_finalize_float";
+        case s32: return "regions_finalize_int";
+        case u32: return "regions_finalize_uint";
+        case s16: return "regions_finalize_short";
+        case u16: return "regions_finalize_ushort";
         default: return nullptr;
+    }
+}
+
+uint32_t regionsMaxLabel(const af_dtype type) noexcept {
+    switch (type) {
+        case f32: return 1u << 24u;
+        case s32: return static_cast<uint32_t>(std::numeric_limits<int32_t>::max());
+        case u32: return std::numeric_limits<uint32_t>::max();
+        case s16: return static_cast<uint32_t>(std::numeric_limits<int16_t>::max());
+        case u16: return std::numeric_limits<uint16_t>::max();
+        default: return 0;
     }
 }
 
@@ -675,21 +687,156 @@ bool supportsMetalRegions(const af_dtype type) noexcept {
 }
 
 void launchMetalRegions(BufferParam output, const size_t outputBytes,
-                        const af::dim4& dims, const af::dim4& outputStrides,
-                        BufferParam input, const size_t inputBytes,
+                        const af::dim4& dims, BufferParam input,
                         const af::dim4& inputStrides,
                         const af_connectivity connectivity,
                         const af_dtype type) {
+    const size_t count = static_cast<size_t>(dims.elements());
+    if (count == 0) return;
+    if (count > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal connected components supports at most 2^32-1 pixels",
+                 AF_ERR_SIZE);
+    if (!output.buffer || !input.buffer)
+        AF_ERROR("Could not allocate Metal connected components buffers",
+                 AF_ERR_NO_MEM);
+
+    const char* finalizer = regionsFunctionName(type);
+    if (!finalizer)
+        AF_ERROR("Output type is not supported by Metal connected components",
+                 AF_ERR_NOT_SUPPORTED);
+
     RegionsParams params{};
-    for (int i = 0; i < 4; ++i) {
-        params.dims[i]          = static_cast<uint64_t>(dims[i]);
-        params.outputStrides[i] = static_cast<uint64_t>(outputStrides[i]);
-        params.inputStrides[i]  = static_cast<uint64_t>(inputStrides[i]);
-    }
+    params.width        = static_cast<uint64_t>(dims[0]);
+    params.height       = static_cast<uint64_t>(dims[1]);
+    params.inputStrideX = static_cast<uint64_t>(inputStrides[0]);
+    params.inputStrideY = static_cast<uint64_t>(inputStrides[1]);
     params.connectivity = static_cast<uint32_t>(connectivity);
-    launchSingleInputKernel(output, outputBytes, dims, input, inputBytes,
-                            &params, sizeof(params), regionsFunctionName(type),
-                            "connected components");
+
+    const size_t labelBytes = count * sizeof(uint32_t);
+    auto allocatePrivateBuffer = [](const size_t bytes) {
+        auto buffer = NS::TransferPtr(metalDevice()->newBuffer(
+            bytes, MTL::ResourceStorageModePrivate));
+        if (!buffer)
+            AF_ERROR("Could not allocate Metal connected components scratch",
+                     AF_ERR_NO_MEM);
+        return buffer;
+    };
+
+    auto parent = allocatePrivateBuffer(labelBytes);
+    auto roots  = allocatePrivateBuffer(labelBytes);
+    auto invalidCount = NS::TransferPtr(metalDevice()->newBuffer(
+        sizeof(uint32_t), MTL::ResourceStorageModeShared));
+    if (!invalidCount)
+        AF_ERROR("Could not allocate Metal connected components status buffer",
+                 AF_ERR_NO_MEM);
+
+    constexpr size_t scanWidth = 256;
+    using PrivateBuffer = decltype(allocatePrivateBuffer(size_t{}));
+    std::vector<PrivateBuffer> prefixes;
+    std::vector<PrivateBuffer> blockSums;
+    std::vector<size_t> levelCounts;
+    size_t levelCount = count;
+    while (true) {
+        const size_t groups = (levelCount + scanWidth - 1) / scanWidth;
+        prefixes.emplace_back(allocatePrivateBuffer(levelCount * sizeof(uint32_t)));
+        blockSums.emplace_back(allocatePrivateBuffer(groups * sizeof(uint32_t)));
+        levelCounts.push_back(levelCount);
+        if (groups == 1) break;
+        levelCount = groups;
+    }
+
+    auto* initPipeline = metalPipeline("regions_init_uint");
+    auto* unionPipeline = metalPipeline("regions_union_uint");
+    auto* rootsPipeline = metalPipeline("regions_roots_uint");
+    auto* scanPipeline = metalPipeline("regions_scan_uint");
+    auto* offsetsPipeline = metalPipeline("regions_add_offsets_uint");
+    auto* validatePipeline = metalPipeline("regions_validate_count_uint");
+    auto* finalizerPipeline = metalPipeline(finalizer);
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal connected components encoder",
+                 AF_ERR_RUNTIME);
+
+    auto dispatch = [&](MTL::ComputePipelineState* pipeline,
+                        const size_t total) {
+        encoder->setComputePipelineState(pipeline);
+        const auto width = std::min<NS::UInteger>(
+            256, pipeline->maxTotalThreadsPerThreadgroup());
+        encoder->dispatchThreads(MTL::Size(total, 1, 1), MTL::Size(width, 1, 1));
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    };
+
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(parent.get(), 0, 1);
+    encoder->setBytes(&params, sizeof(params), 2);
+    dispatch(initPipeline, count);
+
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(parent.get(), 0, 1);
+    encoder->setBytes(&params, sizeof(params), 2);
+    dispatch(unionPipeline, count);
+
+    RegionsCountParams countParams{static_cast<uint64_t>(count)};
+    encoder->setBuffer(parent.get(), 0, 0);
+    encoder->setBuffer(roots.get(), 0, 1);
+    encoder->setBytes(&countParams, sizeof(countParams), 2);
+    dispatch(rootsPipeline, count);
+
+    for (size_t level = 0; level < levelCounts.size(); ++level) {
+        const size_t groups =
+            (levelCounts[level] + scanWidth - 1) / scanWidth;
+        RegionsScanParams scanParams{
+            static_cast<uint64_t>(levelCounts[level]), level == 0 ? 1u : 0u};
+        encoder->setBuffer(level == 0 ? roots.get() : blockSums[level - 1].get(),
+                           0, 0);
+        encoder->setBuffer(prefixes[level].get(), 0, 1);
+        encoder->setBuffer(blockSums[level].get(), 0, 2);
+        encoder->setBytes(&scanParams, sizeof(scanParams), 3);
+        encoder->setComputePipelineState(scanPipeline);
+        encoder->dispatchThreadgroups(MTL::Size(groups, 1, 1),
+                                      MTL::Size(scanWidth, 1, 1));
+        encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    }
+
+    for (size_t level = levelCounts.size(); level-- > 1;) {
+        const size_t target = level - 1;
+        RegionsCountParams targetParams{
+            static_cast<uint64_t>(levelCounts[target])};
+        encoder->setBuffer(prefixes[target].get(), 0, 0);
+        encoder->setBuffer(prefixes[level].get(), 0, 1);
+        encoder->setBytes(&targetParams, sizeof(targetParams), 2);
+        dispatch(offsetsPipeline, levelCounts[target]);
+    }
+
+    RegionsValidationParams validationParams{regionsMaxLabel(type)};
+    encoder->setBuffer(blockSums.back().get(), 0, 0);
+    encoder->setBuffer(invalidCount.get(), 0, 1);
+    encoder->setBytes(&validationParams, sizeof(validationParams), 2);
+    dispatch(validatePipeline, 1);
+
+    encoder->setBuffer(roots.get(), 0, 0);
+    encoder->setBuffer(prefixes[0].get(), 0, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBytes(&countParams, sizeof(countParams), 3);
+    dispatch(finalizerPipeline, count);
+
+    UNUSED(outputBytes);
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    syncCommandQueue();
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal connected components failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
+    if (*static_cast<const uint32_t*>(invalidCount->contents()) != 0)
+        AF_ERROR("Metal connected component count exceeds output type range",
+                 AF_ERR_SIZE);
 }
 
 void launchMetalAnisotropicDiffusion(BufferParam output,
