@@ -56,6 +56,50 @@ const char* floodFillFinalizeKernelName(const af_dtype type) noexcept {
     }
 }
 
+const char* morph2dTiledFunctionName(const af_dtype type) noexcept {
+    switch (type) {
+        case f32: return "morph2d_tiled_float";
+        case s32: return "morph2d_tiled_int";
+        case u32: return "morph2d_tiled_uint";
+        case s8: return "morph2d_tiled_char";
+        case u8:
+        case b8: return "morph2d_tiled_uchar";
+        case s16: return "morph2d_tiled_short";
+        case u16: return "morph2d_tiled_ushort";
+        default: return nullptr;
+    }
+}
+
+const char* morphChunkedFunctionName(const af_dtype type) noexcept {
+    switch (type) {
+        case f32: return "morph_chunked_float";
+        case s32: return "morph_chunked_int";
+        case u32: return "morph_chunked_uint";
+        case s8: return "morph_chunked_char";
+        case u8:
+        case b8: return "morph_chunked_uchar";
+        case s16: return "morph_chunked_short";
+        case u16: return "morph_chunked_ushort";
+        default: return nullptr;
+    }
+}
+
+const char* bilateralTiledFunctionName(const af_dtype inputType,
+                                       const af_dtype outputType) noexcept {
+    if (outputType != f32) return nullptr;
+    switch (inputType) {
+        case f32: return "bilateral_tiled_float";
+        case s32: return "bilateral_tiled_int";
+        case u32: return "bilateral_tiled_uint";
+        case s8: return "bilateral_tiled_char";
+        case u8:
+        case b8: return "bilateral_tiled_uchar";
+        case s16: return "bilateral_tiled_short";
+        case u16: return "bilateral_tiled_ushort";
+        default: return nullptr;
+    }
+}
+
 }  // namespace
 
 bool supportsMetalHistogram(const af_dtype type) noexcept {
@@ -129,10 +173,79 @@ void launchMetalMorph(BufferParam output, const size_t outputBytes,
     params.dilation = dilation;
     params.volume   = volume;
 
-    launchTwoInputKernel(
-        output, outputBytes, input, inputBytes, mask, maskBytes, &params,
-        sizeof(params), static_cast<size_t>(outputDims.elements()),
-        morphFunctionName(type), "morph");
+    if (outputBytes == 0 || outputDims.elements() == 0) return;
+    const char* functionName = volume ? morphChunkedFunctionName(type)
+                                      : morph2dTiledFunctionName(type);
+    if (!functionName) {
+        AF_ERROR("Morphology type is not supported by the Metal tiled kernel",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    if (!output.buffer || !input.buffer || !mask.buffer)
+        AF_ERROR("Could not allocate Metal morphology buffers", AF_ERR_NO_MEM);
+
+    constexpr NS::UInteger tileX = 16;
+    constexpr NS::UInteger tileY = 8;
+    constexpr size_t chunkX = 8;
+    constexpr size_t chunkY = 8;
+    constexpr size_t maxThreadgroupBytes = 16 * 1024;
+    const size_t maskWidth = static_cast<size_t>(maskDims[0]);
+    const size_t maskHeight = static_cast<size_t>(maskDims[1]);
+    const size_t maxSize = std::numeric_limits<size_t>::max();
+    const bool widthOverflow =
+        maskWidth > maxSize - (static_cast<size_t>(tileX) - 1);
+    const bool heightOverflow =
+        maskHeight > maxSize - (static_cast<size_t>(tileY) - 1);
+    bool useChunkedKernel = volume || widthOverflow || heightOverflow;
+    size_t sharedBytes =
+        (static_cast<size_t>(tileX) + chunkX - 1) *
+        (static_cast<size_t>(tileY) + chunkY - 1) * sizeof(uint32_t);
+    if (!useChunkedKernel) {
+        const size_t sharedWidth = static_cast<size_t>(tileX) + maskWidth - 1;
+        const size_t sharedHeight =
+            static_cast<size_t>(tileY) + maskHeight - 1;
+        if (sharedWidth > maxSize / sharedHeight) {
+            useChunkedKernel = true;
+        } else {
+            const size_t tileElements = sharedWidth * sharedHeight;
+            if (tileElements > maxSize / sizeof(uint32_t) ||
+                tileElements * sizeof(uint32_t) > maxThreadgroupBytes) {
+                useChunkedKernel = true;
+            } else {
+                sharedBytes = tileElements * sizeof(uint32_t);
+            }
+        }
+    }
+    if (useChunkedKernel) functionName = morphChunkedFunctionName(type);
+    const size_t groupsX =
+        (static_cast<size_t>(outputDims[0]) + tileX - 1) / tileX;
+    const size_t groupsY =
+        (static_cast<size_t>(outputDims[1]) + tileY - 1) / tileY;
+    const size_t groupsZ = static_cast<size_t>(outputDims[2]) *
+                           static_cast<size_t>(outputDims[3]);
+
+    auto commandBuffer = NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal morphology command encoder",
+                 AF_ERR_RUNTIME);
+    auto* pipeline = metalPipeline(functionName);
+    encoder->setComputePipelineState(pipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(mask.buffer, mask.offset, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->setThreadgroupMemoryLength(sharedBytes, 0);
+    encoder->dispatchThreadgroups(MTL::Size(groupsX, groupsY, groupsZ),
+                                  MTL::Size(tileX, tileY, 1));
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal morphology dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalNearestNeighbour(const af_dtype inputType,
@@ -295,10 +408,74 @@ void launchMetalBilateral(BufferParam output, const size_t outputBytes,
     }
     params.spatialSigma   = spatialSigma;
     params.chromaticSigma = chromaticSigma;
-    launchSingleInputKernel(output, outputBytes, outputDims, input, inputBytes,
-                            &params, sizeof(params),
-                            bilateralFunctionName(inputType, outputType),
-                            "bilateral");
+    if (outputBytes == 0 || outputDims.elements() == 0) return;
+    const char* functionName =
+        bilateralTiledFunctionName(inputType, outputType);
+    if (!functionName) {
+        AF_ERROR("Bilateral filter type combination is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    if (!input.buffer || !output.buffer)
+        AF_ERROR("Could not allocate Metal bilateral buffers", AF_ERR_NO_MEM);
+
+    constexpr NS::UInteger tileX = 16;
+    constexpr NS::UInteger tileY = 8;
+    const float space = std::clamp(spatialSigma, 0.0f, 11.5f);
+    const size_t radius = static_cast<size_t>(
+        std::max(static_cast<int>(space * 1.5f), 1));
+    const size_t sharedWidth = static_cast<size_t>(tileX) + 2 * radius;
+    const size_t sharedHeight = static_cast<size_t>(tileY) + 2 * radius;
+    const size_t maxSize = std::numeric_limits<size_t>::max();
+    const size_t windowSize = 2 * radius + 1;
+    if (sharedWidth > maxSize / sharedHeight ||
+        windowSize > maxSize / windowSize) {
+        AF_ERROR("Metal bilateral tile size overflow", AF_ERR_SIZE);
+    }
+    const size_t tileElements = sharedWidth * sharedHeight;
+    const size_t weightElements = windowSize * windowSize;
+    constexpr size_t maxThreadgroupMemoryBytes = 16 * 1024;
+    if (tileElements > maxSize / sizeof(float) ||
+        weightElements > maxSize / sizeof(float) ||
+        tileElements > maxSize - weightElements ||
+        tileElements + weightElements >
+            maxSize / sizeof(float)) {
+        AF_ERROR("Metal bilateral tile size overflow", AF_ERR_SIZE);
+    }
+    const size_t sharedBytes =
+        (tileElements + weightElements) * sizeof(float);
+    if (sharedBytes > maxThreadgroupMemoryBytes) {
+        AF_ERROR("Metal bilateral threadgroup storage exceeds its limit",
+                 AF_ERR_SIZE);
+    }
+    const size_t groupsX =
+        (static_cast<size_t>(outputDims[0]) + tileX - 1) / tileX;
+    const size_t groupsY =
+        (static_cast<size_t>(outputDims[1]) + tileY - 1) / tileY;
+    const size_t groupsZ = static_cast<size_t>(outputDims[2]) *
+                           static_cast<size_t>(outputDims[3]);
+
+    auto commandBuffer = NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal bilateral command encoder",
+                 AF_ERR_RUNTIME);
+    auto* pipeline = metalPipeline(functionName);
+    encoder->setComputePipelineState(pipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(output.buffer, output.offset, 1);
+    encoder->setBytes(&params, sizeof(params), 2);
+    encoder->setThreadgroupMemoryLength(sharedBytes, 0);
+    encoder->dispatchThreadgroups(MTL::Size(groupsX, groupsY, groupsZ),
+                                  MTL::Size(tileX, tileY, 1));
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal bilateral dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalMeanshift(const af_dtype type) noexcept {

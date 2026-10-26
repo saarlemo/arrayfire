@@ -71,14 +71,14 @@ const char* histogramFunctionName(const af_dtype type) {
 
 const char* morphFunctionName(const af_dtype type) {
     switch (type) {
-        case f32: return "morph_float";
-        case s32: return "morph_int";
-        case u32: return "morph_uint";
-        case s8: return "morph_char";
+        case f32: return "morph_chunked_float";
+        case s32: return "morph_chunked_int";
+        case u32: return "morph_chunked_uint";
+        case s8: return "morph_chunked_char";
         case u8:
-        case b8: return "morph_uchar";
-        case s16: return "morph_short";
-        case u16: return "morph_ushort";
+        case b8: return "morph_chunked_uchar";
+        case s16: return "morph_chunked_short";
+        case u16: return "morph_chunked_ushort";
         default: return nullptr;
     }
 }
