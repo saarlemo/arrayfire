@@ -527,8 +527,9 @@ struct RandomParams {
 
 struct MersenneParams {
     uint64_t elements;
+    uint64_t elementsPerBlock;
     uint32_t mask;
-    uint32_t reserved;
+    uint32_t blocks;
 };
 
 struct MersenneInitParams {

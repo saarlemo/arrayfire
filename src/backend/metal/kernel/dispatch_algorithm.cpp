@@ -2144,10 +2144,40 @@ void launchMetalRandomMersenne(
         AF_ERROR("The random type is not supported by the native Metal Mersenne kernel",
                  AF_ERR_NOT_SUPPORTED);
     }
+    if (outputBytes == 0 || elements == 0) return;
     if (!output.buffer || !state.buffer || !pos.buffer || !sh1.buffer ||
         !sh2.buffer || !recursionTable.buffer || !temperTable.buffer) {
         AF_ERROR("Could not allocate native Metal random buffers", AF_ERR_NO_MEM);
     }
+
+    size_t elementSize = 0;
+    switch (dataType) {
+        case f32:
+        case s32:
+        case u32: elementSize = 4; break;
+        case s64:
+        case u64: elementSize = 8; break;
+        case s8:
+        case b8:
+        case u8: elementSize = 1; break;
+        case s16:
+        case u16:
+        case f16: elementSize = 2; break;
+        default:
+            AF_ERROR("The random type is not supported by the native Metal Mersenne kernel",
+                     AF_ERR_NOT_SUPPORTED);
+    }
+
+    constexpr size_t threadgroupSize = 256;
+    const size_t elementsPerIteration =
+        threadgroupSize * (4 * sizeof(uint) / elementSize);
+    const size_t minElementsPerBlock = 32 * elementsPerIteration;
+    const size_t blocks =
+        std::min<size_t>(32, (elements - 1) / minElementsPerBlock + 1);
+    size_t elementsPerBlock = (elements - 1) / blocks + 1;
+    elementsPerBlock =
+        ((elementsPerBlock - 1) / elementsPerIteration + 1) *
+        elementsPerIteration;
 
     auto commandBuffer = NS::RetainPtr(metalCommandQueue()->commandBuffer());
     auto encoder = commandBuffer
@@ -2166,9 +2196,16 @@ void launchMetalRandomMersenne(
     encoder->setBuffer(sh2.buffer, sh2.offset, 4);
     encoder->setBuffer(recursionTable.buffer, recursionTable.offset, 5);
     encoder->setBuffer(temperTable.buffer, temperTable.offset, 6);
-    MersenneParams p{elements, mask, 0};
+    MersenneParams p{elements, elementsPerBlock, mask,
+                     static_cast<uint32_t>(blocks)};
     encoder->setBytes(&p, sizeof(p), 7);
-    encoder->dispatchThreads(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
+    const auto maxThreads = pipeline->maxTotalThreadsPerThreadgroup();
+    if (maxThreads < threadgroupSize) {
+        AF_ERROR("Metal device does not support the Mersenne threadgroup size",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    encoder->dispatchThreads(MTL::Size(blocks * threadgroupSize, 1, 1),
+                             MTL::Size(threadgroupSize, 1, 1));
     encoder->endEncoding();
     submitCommandBuffer(commandBuffer.get());
 }

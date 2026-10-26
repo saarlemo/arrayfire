@@ -13,7 +13,6 @@
 #include <common/dispatch.hpp>
 #include <common/half.hpp>
 #include <err_metal.hpp>
-#include <kernel/random_engine_mersenne.hpp>
 #include <kernel/random_engine_philox.hpp>
 #include <kernel/random_engine_threefry.hpp>
 #include <types.hpp>
@@ -335,58 +334,6 @@ void threefryNormal(T *out, size_t elements, const uintl seed, uintl counter) {
         int lim = (reset < (int)(elements - i)) ? reset : (int)(elements - i);
         for (int j = 0; j < lim; ++j) { out[i + j] = temp[j]; }
     }
-}
-
-template<typename T>
-void uniformDistributionMT(T *out, size_t elements, uint *const state,
-                           const uint *const pos, const uint *const sh1,
-                           const uint *const sh2, uint mask,
-                           const uint *const recursion_table,
-                           const uint *const temper_table) {
-    uint l_state[STATE_SIZE];
-    uint o[4];
-    uint lpos = pos[0];
-    uint lsh1 = sh1[0];
-    uint lsh2 = sh2[0];
-
-    state_read(l_state, state);
-
-    int reset = (4 * sizeof(uint)) / sizeof(T);
-    for (int i = 0; i < (int)elements; i += reset) {
-        mersenne(o, l_state, i, lpos, lsh1, lsh2, mask, recursion_table,
-                 temper_table);
-        int lim = (reset < (int)(elements - i)) ? reset : (int)(elements - i);
-        for (int j = 0; j < lim; ++j) { out[i + j] = transform<T>(o, j); }
-    }
-
-    state_write(state, l_state);
-}
-
-template<typename T>
-void normalDistributionMT(T *out, size_t elements, uint *const state,
-                          const uint *const pos, const uint *const sh1,
-                          const uint *const sh2, uint mask,
-                          const uint *const recursion_table,
-                          const uint *const temper_table) {
-    T temp[(4 * sizeof(uint)) / sizeof(T)];
-    uint l_state[STATE_SIZE];
-    uint o[4];
-    uint lpos = pos[0];
-    uint lsh1 = sh1[0];
-    uint lsh2 = sh2[0];
-
-    state_read(l_state, state);
-
-    int reset = (4 * sizeof(uint)) / sizeof(T);
-    for (int i = 0; i < (int)elements; i += reset) {
-        mersenne(o, l_state, i, lpos, lsh1, lsh2, mask, recursion_table,
-                 temper_table);
-        boxMullerTransform(o, temp);
-        int lim = (reset < (int)(elements - i)) ? reset : (int)(elements - i);
-        for (int j = 0; j < lim; ++j) { out[i + j] = temp[j]; }
-    }
-
-    state_write(state, l_state);
 }
 
 template<typename T>

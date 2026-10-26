@@ -18,8 +18,9 @@ struct RandomParams {
 
 struct MersenneParams {
     ulong elements;
+    ulong elementsPerBlock;
     uint mask;
-    uint reserved;
+    uint blocks;
 };
 
 struct MersenneInitParams { ulong seed; };
@@ -28,20 +29,27 @@ kernel void random_mersenne_init(const device uint* table [[buffer(0)]],
                                  device uint* state [[buffer(1)]],
                                  constant MersenneInitParams& p [[buffer(2)]],
                                  uint gid [[thread_position_in_grid]]) {
-    if (gid != 0) return;
-    const uint hiddenSeed = table[4] ^ (table[8] << 16);
+    if (gid >= 32) return;
+    const uint stream = gid;
+    const uint tableOffset = stream * 16;
+    const uint stateOffset = stream * 351;
+    const uint hiddenSeed = table[tableOffset + 4] ^
+                           (table[tableOffset + 8] << 16);
     uint repeated = hiddenSeed;
     repeated += repeated >> 16;
     repeated += repeated >> 8;
     repeated &= 0xff;
     repeated |= repeated << 8;
     repeated |= repeated << 16;
-    state[0] = uint(p.seed);
-    state[1] = hiddenSeed ^
-               (1812433253u * (state[0] ^ (state[0] >> 30)) + 1u);
+    state[stateOffset] = uint(p.seed);
+    state[stateOffset + 1] = hiddenSeed ^
+               (1812433253u * (state[stateOffset] ^
+                                (state[stateOffset] >> 30)) + 1u);
     for (uint i = 2; i < 351; ++i) {
-        state[i] = repeated;
-        state[i] ^= 1812433253u * (state[i - 1] ^ (state[i - 1] >> 30)) + i;
+        state[stateOffset + i] = repeated;
+        state[stateOffset + i] ^=
+            1812433253u * (state[stateOffset + i - 1] ^
+                           (state[stateOffset + i - 1] >> 30)) + i;
     }
 }
 
@@ -99,6 +107,17 @@ inline long randomLongUniform(thread const uint* values, const uint index) {
 
 inline ulong randomULongUniform(thread const uint* values, const uint index) {
     return (ulong(values[index * 2]) << 32) | ulong(values[index * 2 + 1]);
+}
+
+inline long randomMersenneLongUniform(thread const uint* values,
+                                      const uint index) {
+    return long((ulong(values[index * 2 + 1]) << 32) |
+                ulong(values[index * 2]));
+}
+
+inline ulong randomMersenneULongUniform(thread const uint* values,
+                                        const uint index) {
+    return (ulong(values[index * 2 + 1]) << 32) | ulong(values[index * 2]);
 }
 
 inline void philoxRound(thread uint* key, thread uint* counter) {
@@ -247,7 +266,7 @@ kernel void NAME(device TYPE* output [[buffer(0)]],                        \
 DEFINE_RANDOM_NORMAL(random_normal_float, float, 4, 4, randomNormalFloat)
 DEFINE_RANDOM_NORMAL(random_normal_half, half, 8, 8, randomNormalHalf)
 
-inline uint mersenneRecursion(const device uint* table, const uint mask,
+inline uint mersenneRecursion(threadgroup const uint* table, const uint mask,
                               const uint sh1, const uint sh2, const uint x1,
                               const uint x2, uint y) {
     uint x = (x1 & mask) ^ x2;
@@ -256,111 +275,104 @@ inline uint mersenneRecursion(const device uint* table, const uint mask,
     return y ^ table[y & 0x0fu];
 }
 
-inline uint mersenneTemper(const device uint* table, const uint value,
+inline uint mersenneTemper(threadgroup const uint* table, const uint value,
                            uint t) {
     t ^= t >> 16;
     t ^= t >> 8;
     return value ^ table[t & 0x0fu];
 }
 
-inline void mersenneWords(thread uint* out, thread uint* state,
-                          const uint iteration, const uint pos,
-                          const uint sh1, const uint sh2, const uint mask,
-                          const device uint* recursionTable,
-                          const device uint* temperTable) {
-    int index = int(iteration % 768u);
-    int offsetX1 = (768 - 351 + index) % 768;
-    int offsetX2 = (768 - 351 + index + 1) % 768;
-    int offsetY = (768 - 351 + index + int(pos)) % 768;
-    int offsetT = (768 - 351 + index + int(pos) - 1) % 768;
-    for (uint i = 0; i < 4; ++i) {
-        state[index] = mersenneRecursion(recursionTable, mask, sh1, sh2,
-                                         state[offsetX1], state[offsetX2],
-                                         state[offsetY]);
-        out[i] = mersenneTemper(temperTable, state[index], state[offsetT]);
-        offsetX1 = (offsetX1 + 1) % 768;
-        offsetX2 = (offsetX2 + 1) % 768;
-        offsetY = (offsetY + 1) % 768;
-        offsetT = (offsetT + 1) % 768;
-        index = (index + 1) % 768;
-    }
-}
-
-#define DEFINE_MERSENNE_UNIFORM(NAME, TYPE, RESET, FN)                     \
+#define DEFINE_MERSENNE(NAME, TYPE, FN)                                     \
 kernel void NAME(device TYPE* output [[buffer(0)]],                        \
-                 device uint* state [[buffer(1)]],                        \
+                 device uint* state [[buffer(1)]],                         \
                  const device uint* pos [[buffer(2)]],                     \
                  const device uint* sh1 [[buffer(3)]],                     \
                  const device uint* sh2 [[buffer(4)]],                     \
                  const device uint* recursionTable [[buffer(5)]],          \
-                 const device uint* temperTable [[buffer(6)]],              \
-                 constant MersenneParams& p [[buffer(7)]],                  \
-                 uint gid [[thread_position_in_grid]]) {                  \
-    if (gid != 0) return;                                                   \
-    uint localState[768];                                                   \
-    for (uint i = 0; i < 351; ++i) localState[417 + i] = state[i];          \
-    const uint posValue = pos[0];                                           \
-    const uint sh1Value = sh1[0];                                           \
-    const uint sh2Value = sh2[0];                                           \
-    for (uint base = 0; base < p.elements; base += RESET) {                \
-        uint words[4];                                                      \
-        mersenneWords(words, localState, base, posValue, sh1Value,           \
-                      sh2Value, p.mask, recursionTable, temperTable);       \
-        for (uint j = 0; j < RESET && base + j < p.elements; ++j)            \
-            output[base + j] = FN(words, j);                                \
+                 const device uint* temperTable [[buffer(6)]],             \
+                 constant MersenneParams& p [[buffer(7)]],                \
+                 uint lane [[thread_index_in_threadgroup]],                \
+                 uint block [[threadgroup_position_in_grid]]) {            \
+    if (block >= p.blocks) return;                                         \
+    threadgroup uint localState[768];                                       \
+    threadgroup uint localRecursion[16];                                    \
+    threadgroup uint localTemper[16];                                       \
+    if (lane < 256)                                                          \
+        localState[417 + lane] = state[block * 351 + lane];                 \
+    if (lane < 95)                                                           \
+        localState[673 + lane] = state[block * 351 + 256 + lane];           \
+    if (lane < 16) {                                                        \
+        localRecursion[lane] = recursionTable[block * 16 + lane];           \
+        localTemper[lane] = temperTable[block * 16 + lane];                 \
     }                                                                       \
-    for (uint i = 0; i < 351; ++i) state[i] = localState[417 + i];           \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                        \
+    const uint posValue = pos[block];                                       \
+    const uint sh1Value = sh1[block];                                       \
+    const uint sh2Value = sh2[block];                                       \
+    const ulong start = ulong(block) * p.elementsPerBlock;                   \
+    if (start >= p.elements) return;                                         \
+    const ulong end = min(start + p.elementsPerBlock, p.elements);           \
+    const uint valuesPerLane = 16u / uint(sizeof(TYPE));                    \
+    const ulong elementsPerIteration = ulong(256u) * valuesPerLane;          \
+    const ulong iterations = (end - start + elementsPerIteration - 1) /      \
+                             elementsPerIteration;                          \
+    uint words[4];                                                          \
+    uint offsetX1 = 417u + lane;                                            \
+    uint offsetX2 = 417u + lane + 1u;                                       \
+    uint offsetY = 417u + lane + posValue;                                  \
+    uint offsetT = 417u + lane + posValue - 1u;                             \
+    uint offsetO = lane;                                                    \
+    for (ulong iteration = 0; iteration < iterations; ++iteration) {        \
+        for (uint word = 0; word < 4; ++word) {                             \
+            const uint value = mersenneRecursion(                           \
+                localRecursion, p.mask, sh1Value, sh2Value,                 \
+                localState[offsetX1 % 768u],                                \
+                localState[offsetX2 % 768u],                                \
+                localState[offsetY % 768u]);                                \
+            localState[offsetO % 768u] = value;                             \
+            words[word] = mersenneTemper(                                   \
+                localTemper, value, localState[offsetT % 768u]);             \
+            offsetX1 = (offsetX1 + 256u) % 768u;                            \
+            offsetX2 = (offsetX2 + 256u) % 768u;                            \
+            offsetY = (offsetY + 256u) % 768u;                              \
+            offsetT = (offsetT + 256u) % 768u;                              \
+            offsetO = (offsetO + 256u) % 768u;                              \
+            threadgroup_barrier(mem_flags::mem_threadgroup);                 \
+        }                                                                   \
+        const ulong iterationStart =                                        \
+            start + iteration * elementsPerIteration + lane;                 \
+        for (uint j = 0; j < valuesPerLane; ++j) {                           \
+            const ulong outputIndex = iterationStart + ulong(j) * 256u;      \
+            if (outputIndex < p.elements)                                    \
+                output[outputIndex] = FN(words, j);                          \
+        }                                                                   \
+    }                                                                       \
+    if (lane < 256)                                                         \
+        state[block * 351 + lane] = localState[417 + lane];                 \
+    if (lane < 95)                                                          \
+        state[block * 351 + 256 + lane] = localState[673 + lane];           \
 }
 
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_float, float, 4,
-                        randomFloatUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_int, int, 4, randomIntUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_uint, uint, 4,
-                        randomUIntUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_long, long, 2,
-                        randomLongUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_ulong, ulong, 2,
-                        randomULongUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_char, char, 16,
-                        randomCharUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_schar, char, 16,
-                        randomSCharUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_uchar, uchar, 16,
-                        randomUCharUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_short, short, 8,
-                        randomShortUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_ushort, ushort, 8,
-                        randomUShortUniform)
-DEFINE_MERSENNE_UNIFORM(random_mersenne_uniform_half, half, 8,
-                        randomHalfUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_float, float,
+                randomFloatUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_int, int, randomIntUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_uint, uint, randomUIntUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_long, long,
+                randomMersenneLongUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_ulong, ulong,
+                randomMersenneULongUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_char, char, randomCharUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_schar, char,
+                randomSCharUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_uchar, uchar,
+                randomUCharUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_short, short,
+                randomShortUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_ushort, ushort,
+                randomUShortUniform)
+DEFINE_MERSENNE(random_mersenne_uniform_half, half,
+                randomHalfUniform)
 
-#define DEFINE_MERSENNE_NORMAL(NAME, TYPE, RESET, FN)                       \
-kernel void NAME(device TYPE* output [[buffer(0)]],                        \
-                 device uint* state [[buffer(1)]],                        \
-                 const device uint* pos [[buffer(2)]],                     \
-                 const device uint* sh1 [[buffer(3)]],                     \
-                 const device uint* sh2 [[buffer(4)]],                     \
-                 const device uint* recursionTable [[buffer(5)]],          \
-                 const device uint* temperTable [[buffer(6)]],              \
-                 constant MersenneParams& p [[buffer(7)]],                  \
-                 uint gid [[thread_position_in_grid]]) {                  \
-    if (gid != 0) return;                                                   \
-    uint localState[768];                                                   \
-    for (uint i = 0; i < 351; ++i) localState[417 + i] = state[i];          \
-    const uint posValue = pos[0];                                           \
-    const uint sh1Value = sh1[0];                                           \
-    const uint sh2Value = sh2[0];                                           \
-    for (uint base = 0; base < p.elements; base += RESET) {                \
-        uint words[4];                                                      \
-        mersenneWords(words, localState, base, posValue, sh1Value,           \
-                      sh2Value, p.mask, recursionTable, temperTable);       \
-        for (uint j = 0; j < RESET && base + j < p.elements; ++j)            \
-            output[base + j] = FN(words, j);                                \
-    }                                                                       \
-    for (uint i = 0; i < 351; ++i) state[i] = localState[417 + i];           \
-}
-
-DEFINE_MERSENNE_NORMAL(random_mersenne_normal_float, float, 4,
-                       randomNormalFloat)
-DEFINE_MERSENNE_NORMAL(random_mersenne_normal_half, half, 8,
-                       randomNormalHalf)
+DEFINE_MERSENNE(random_mersenne_normal_float, float,
+                randomNormalFloat)
+DEFINE_MERSENNE(random_mersenne_normal_half, half, randomNormalHalf)
