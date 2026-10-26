@@ -29,96 +29,92 @@ inline int fastTest(const device T* image, float center, float threshold,
 }
 
 template<typename T>
-inline void fastLocateImpl(
+inline void fastLocatePixel(
     const device T* image, device float* scoreImage, device float* xOutput,
-    device float* yOutput, device float* scoreOutput, device uint* count,
-    constant FastParams& p) {
-    uint found = 0;
-    for (int row = int(p.edge); row < int(p.rows - p.edge); ++row) {
-        for (int column = int(p.edge); column < int(p.columns - p.edge);
-             ++column) {
-            const float center =
-                float(image[ulong(column) * p.rows + ulong(row)]);
-            int d = fastTest(image, center, p.threshold, row - 3, column, p.rows) |
-                    fastTest(image, center, p.threshold, row + 3, column, p.rows);
-            if (d == 0) continue;
-            d &= fastTest(image, center, p.threshold, row - 2, column + 2,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row + 2, column - 2,
-                          p.rows);
-            d &= fastTest(image, center, p.threshold, row, column + 3, p.rows) |
-                 fastTest(image, center, p.threshold, row, column - 3, p.rows);
-            d &= fastTest(image, center, p.threshold, row + 2, column + 2,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row - 2, column - 2,
-                          p.rows);
-            if (d == 0) continue;
-            d &= fastTest(image, center, p.threshold, row - 3, column + 1,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row + 3, column - 1,
-                          p.rows);
-            d &= fastTest(image, center, p.threshold, row - 1, column + 3,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row + 1, column - 3,
-                          p.rows);
-            d &= fastTest(image, center, p.threshold, row + 1, column + 3,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row - 1, column - 3,
-                          p.rows);
-            d &= fastTest(image, center, p.threshold, row + 3, column + 1,
-                          p.rows) |
-                 fastTest(image, center, p.threshold, row - 3, column - 1,
-                          p.rows);
-            if (d == 0) continue;
+    device float* yOutput, device float* scoreOutput,
+    device atomic_uint* count, constant FastParams& p, uint gid) {
+    const ulong validRows = p.rows > 2ul * p.edge ? p.rows - 2ul * p.edge : 0;
+    const ulong validColumns =
+        p.columns > 2ul * p.edge ? p.columns - 2ul * p.edge : 0;
+    const ulong candidateCount = validRows * validColumns;
+    if (validRows == 0 || ulong(gid) >= candidateCount) return;
 
-            int sum = 0;
-            for (uint i = 0; i < p.arcLength; ++i)
-                sum += fastTest(image, center, p.threshold, row + fastDy(i),
-                                column + fastDx(i), p.rows);
-            int maxSum = max(0, sum), minSum = min(0, sum);
-            for (uint i = p.arcLength; i < 16; ++i) {
-                sum -= fastTest(image, center, p.threshold,
-                                row + fastDy(i - p.arcLength),
-                                column + fastDx(i - p.arcLength), p.rows);
-                sum += fastTest(image, center, p.threshold, row + fastDy(i),
-                                column + fastDx(i), p.rows);
-                maxSum = max(maxSum, sum);
-                minSum = min(minSum, sum);
-            }
-            for (uint i = 0; i < p.arcLength - 1; ++i) {
-                sum -= fastTest(image, center, p.threshold,
-                                row + fastDy(16 - p.arcLength + i),
-                                column + fastDx(16 - p.arcLength + i), p.rows);
-                sum += fastTest(image, center, p.threshold, row + fastDy(i),
-                                column + fastDx(i), p.rows);
-                maxSum = max(maxSum, sum);
-                minSum = min(minSum, sum);
-            }
+    const int row = int(p.edge + ulong(gid) % validRows);
+    const int column = int(p.edge + ulong(gid) / validRows);
+    // The public API documents edge >= 3 but does not enforce it. Keep the
+    // circle reads in bounds for smaller edge values as well.
+    if (row < 3 || column < 3 || ulong(row + 3) >= p.rows ||
+        ulong(column + 3) >= p.columns)
+        return;
 
-            float bright = 0.0f, dark = 0.0f;
-            for (uint i = 0; i < 16; ++i) {
-                const float value = float(
-                    image[ulong(column + fastDx(i)) * p.rows +
-                          ulong(row + fastDy(i))]);
-                bright += (value > center + p.threshold) *
-                          (fabs(value - center) - p.threshold);
-                dark += (value < center - p.threshold) *
-                        (fabs(center - value) - p.threshold);
-            }
-            if (maxSum == int(p.arcLength) || minSum == -int(p.arcLength)) {
-                const uint index = found++;
-                if (index < p.maxFeatures) {
-                    const float response = max(bright, dark);
-                    xOutput[index] = float(column);
-                    yOutput[index] = float(row);
-                    scoreOutput[index] = response;
-                    if (p.nonmax)
-                        scoreImage[ulong(column) * p.rows + ulong(row)] = response;
-                }
-            }
-        }
+    const ulong centerIndex = ulong(column) * p.rows + ulong(row);
+    const float center = float(image[centerIndex]);
+    int d = fastTest(image, center, p.threshold, row - 3, column, p.rows) |
+            fastTest(image, center, p.threshold, row + 3, column, p.rows);
+    if (d == 0) return;
+    d &= fastTest(image, center, p.threshold, row - 2, column + 2, p.rows) |
+         fastTest(image, center, p.threshold, row + 2, column - 2, p.rows);
+    d &= fastTest(image, center, p.threshold, row, column + 3, p.rows) |
+         fastTest(image, center, p.threshold, row, column - 3, p.rows);
+    d &= fastTest(image, center, p.threshold, row + 2, column + 2, p.rows) |
+         fastTest(image, center, p.threshold, row - 2, column - 2, p.rows);
+    if (d == 0) return;
+    d &= fastTest(image, center, p.threshold, row - 3, column + 1, p.rows) |
+         fastTest(image, center, p.threshold, row + 3, column - 1, p.rows);
+    d &= fastTest(image, center, p.threshold, row - 1, column + 3, p.rows) |
+         fastTest(image, center, p.threshold, row + 1, column - 3, p.rows);
+    d &= fastTest(image, center, p.threshold, row + 1, column + 3, p.rows) |
+         fastTest(image, center, p.threshold, row - 1, column - 3, p.rows);
+    d &= fastTest(image, center, p.threshold, row + 3, column + 1, p.rows) |
+         fastTest(image, center, p.threshold, row - 3, column - 1, p.rows);
+    if (d == 0) return;
+
+    int sum = 0;
+    for (uint i = 0; i < p.arcLength; ++i)
+        sum += fastTest(image, center, p.threshold, row + fastDy(i),
+                        column + fastDx(i), p.rows);
+    int maxSum = max(0, sum), minSum = min(0, sum);
+    for (uint i = p.arcLength; i < 16; ++i) {
+        sum -= fastTest(image, center, p.threshold,
+                        row + fastDy(i - p.arcLength),
+                        column + fastDx(i - p.arcLength), p.rows);
+        sum += fastTest(image, center, p.threshold, row + fastDy(i),
+                        column + fastDx(i), p.rows);
+        maxSum = max(maxSum, sum);
+        minSum = min(minSum, sum);
     }
-    *count = found;
+    for (uint i = 0; i < p.arcLength - 1; ++i) {
+        sum -= fastTest(image, center, p.threshold,
+                        row + fastDy(16 - p.arcLength + i),
+                        column + fastDx(16 - p.arcLength + i), p.rows);
+        sum += fastTest(image, center, p.threshold, row + fastDy(i),
+                        column + fastDx(i), p.rows);
+        maxSum = max(maxSum, sum);
+        minSum = min(minSum, sum);
+    }
+
+    if (maxSum != int(p.arcLength) && minSum != -int(p.arcLength)) return;
+
+    float bright = 0.0f, dark = 0.0f;
+    for (uint i = 0; i < 16; ++i) {
+        const float value =
+            float(image[ulong(column + fastDx(i)) * p.rows +
+                        ulong(row + fastDy(i))]);
+        bright += (value > center + p.threshold) *
+                  (fabs(value - center) - p.threshold);
+        dark += (value < center - p.threshold) *
+                (fabs(center - value) - p.threshold);
+    }
+
+    const uint index =
+        atomic_fetch_add_explicit(count, 1u, memory_order_relaxed);
+    if (index < p.maxFeatures) {
+        const float response = max(bright, dark);
+        xOutput[index] = float(column);
+        yOutput[index] = float(row);
+        scoreOutput[index] = response;
+        if (p.nonmax) scoreImage[centerIndex] = response;
+    }
 }
 
 #define DEFINE_FAST_LOCATE(NAME, TYPE)                                       \
@@ -127,12 +123,16 @@ kernel void NAME(const device TYPE* image [[buffer(0)]],                    \
                  device float* xOutput [[buffer(2)]],                       \
                  device float* yOutput [[buffer(3)]],                       \
                  device float* scoreOutput [[buffer(4)]],                   \
-                 device uint* count [[buffer(5)]],                          \
+                 device atomic_uint* count [[buffer(5)]],                   \
                  constant FastParams& p [[buffer(6)]],                      \
                  uint gid [[thread_position_in_grid]]) {                    \
-    if (gid == 0)                                                           \
-        fastLocateImpl(image, scoreImage, xOutput, yOutput, scoreOutput,    \
-                       count, p);                                           \
+    const ulong validRows = p.rows > 2ul * p.edge ? p.rows - 2ul * p.edge : 0; \
+    const ulong validColumns = p.columns > 2ul * p.edge                  \
+                                   ? p.columns - 2ul * p.edge               \
+                                   : 0;                                    \
+    if (ulong(gid) < validRows * validColumns)                             \
+        fastLocatePixel(image, scoreImage, xOutput, yOutput, scoreOutput,  \
+                        count, p, gid);                                     \
 }
 
 DEFINE_FAST_LOCATE(fast_locate_float, float)

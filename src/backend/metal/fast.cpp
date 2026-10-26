@@ -80,11 +80,12 @@ unsigned fast(Array<float> &x_out, Array<float> &y_out, Array<float> &score_out,
         y_total     = createEmptyArray<float>(feat_found_dims);
         score_total = createEmptyArray<float>(feat_found_dims);
 
-        count = 0;
-        kernel::fastNonMaxMetal(V, x, y, x_total, y_total, score_total, &count,
-                                feat_found, edge);
-
-        feat_found = std::min(max_feat, count);
+        if (feat_found > 0) {
+            count = 0;
+            kernel::fastNonMaxMetal(V, x, y, x_total, y_total, score_total,
+                                    &count, feat_found, edge);
+            feat_found = std::min(max_feat, count);
+        }
     } else {
         x_total     = x;
         y_total     = y;

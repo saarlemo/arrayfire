@@ -1115,6 +1115,14 @@ void launchMetalFast(
     const af_dtype inputType) {
     FastParams p{uint64_t(inputDims[0]), uint64_t(inputDims[1]), threshold,
                  arcLength, nonmax, maxFeatures, edge};
+    const size_t rows = static_cast<size_t>(inputDims[0]);
+    const size_t columns = static_cast<size_t>(inputDims[1]);
+    const size_t margin = 2 * static_cast<size_t>(edge);
+    if (rows <= margin || columns <= margin) {
+        *count = 0;
+        return;
+    }
+    const size_t candidateCount = (rows - margin) * (columns - margin);
     if (!input.buffer || !x.buffer || !y.buffer || !scores.buffer)
         AF_ERROR("Could not allocate Metal buffers", AF_ERR_NO_MEM);
     const char* functionName = fastFunctionName(inputType);
@@ -1144,7 +1152,10 @@ void launchMetalFast(
     encoder->setBuffer(countBuffer.get(), 0, 5);
     encoder->setBytes(&p, sizeof(p), 6);
     UNUSED(inputBytes);
-    encoder->dispatchThreads(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
+    const auto width =
+        std::min<NS::UInteger>(256, pipeline->maxTotalThreadsPerThreadgroup());
+    encoder->dispatchThreads(MTL::Size(candidateCount, 1, 1),
+                             MTL::Size(width, 1, 1));
     encoder->endEncoding();
     submitCommandBuffer(commandBuffer.get());
     // Feature count is consumed immediately on the CPU.
