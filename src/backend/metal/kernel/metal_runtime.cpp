@@ -482,49 +482,6 @@ void launchFourInputThreeOutputKernel(
     }
 }
 
-void launchFloodFillKernel(BufferParam output, const size_t outputBytes,
-                           BufferParam image, const size_t imageBytes,
-                           BufferParam seedX, const size_t seedXBytes,
-                           BufferParam seedY, const size_t seedYBytes,
-                           const void* params, const size_t paramsBytes,
-                           const void* newValue, const void* lower,
-                           const void* upper, const size_t valueBytes,
-                           const char* functionName) {
-    if (outputBytes == 0) return;
-    UNUSED(imageBytes);
-    UNUSED(seedXBytes);
-    UNUSED(seedYBytes);
-    if (!image.buffer || !seedX.buffer || !seedY.buffer || !output.buffer)
-        AF_ERROR("Could not allocate Metal buffers", AF_ERR_NO_MEM);
-
-    auto commandBuffer =
-        NS::RetainPtr(metalCommandQueue()->commandBuffer());
-    auto encoder = commandBuffer
-                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
-                       : nullptr;
-    if (!commandBuffer || !encoder)
-        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
-
-    auto* pipeline = metalPipeline(functionName);
-    encoder->setComputePipelineState(pipeline);
-    encoder->setBuffer(image.buffer, image.offset, 0);
-    encoder->setBuffer(seedX.buffer, seedX.offset, 1);
-    encoder->setBuffer(seedY.buffer, seedY.offset, 2);
-    encoder->setBuffer(output.buffer, output.offset, 3);
-    encoder->setBytes(params, paramsBytes, 4);
-    encoder->setBytes(newValue, valueBytes, 5);
-    encoder->setBytes(lower, valueBytes, 6);
-    encoder->setBytes(upper, valueBytes, 7);
-    encoder->dispatchThreads(MTL::Size(1, 1, 1), MTL::Size(1, 1, 1));
-    encoder->endEncoding();
-    submitCommandBuffer(commandBuffer.get());
-    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
-        const std::string message = description(
-            commandBuffer->error(), "Metal flood fill dispatch failed");
-        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
-    }
-}
-
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

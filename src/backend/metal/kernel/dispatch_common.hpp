@@ -265,7 +265,6 @@ const char* rotateFunctionName(const af_dtype t);
 
 const char* luFunctionName(const af_dtype t);
 const char* luFactorFunctionName(const af_dtype t);
-const char* floodFillFunctionName(const af_dtype type);
 
 const char* indexFunctionName(const af_dtype type);
 

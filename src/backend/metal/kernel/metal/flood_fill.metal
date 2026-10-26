@@ -19,92 +19,110 @@ struct FloodFillParams {
     ulong seedYStrides[4];
 };
 
-#define DEFINE_FLOOD_FILL(NAME, TYPE)                                          \
-kernel void NAME(const device TYPE* image [[buffer(0)]],                       \
-                 const device uint* seedX [[buffer(1)]],                       \
-                 const device uint* seedY [[buffer(2)]],                       \
-                 device TYPE* output [[buffer(3)]],                            \
-                 constant FloodFillParams& params [[buffer(4)]],               \
-                 constant TYPE& newValue [[buffer(5)]],                        \
-                 constant TYPE& lower [[buffer(6)]],                           \
-                 constant TYPE& upper [[buffer(7)]],                           \
-                 uint gid [[thread_position_in_grid]]) {                       \
-    if (gid != 0) return;                                                       \
-    const ulong width = params.imageDims[0];                                   \
-    const ulong height = params.imageDims[1];                                  \
-    const ulong pixels = width * height;                                       \
-    for (ulong y = 0; y < height; ++y) {                                       \
-        for (ulong x = 0; x < width; ++x) {                                    \
-            output[x * params.imageStrides[0] +                                \
-                   y * params.imageStrides[1]] = TYPE(0);                      \
-        }                                                                       \
-    }                                                                           \
-    const ulong seedCount = params.seedDims[0] * params.seedDims[1] *           \
-                            params.seedDims[2] * params.seedDims[3];            \
-    for (ulong seed = 0; seed < seedCount; ++seed) {                           \
-        ulong q = seed;                                                        \
-        const ulong sx0 = q % params.seedDims[0];                              \
-        q /= params.seedDims[0];                                               \
-        const ulong sx1 = q % params.seedDims[1];                              \
-        q /= params.seedDims[1];                                               \
-        const ulong sx2 = q % params.seedDims[2];                              \
-        const ulong sx3 = q / params.seedDims[2];                              \
-        const ulong xOffset = sx0 * params.seedXStrides[0] +                   \
-                              sx1 * params.seedXStrides[1] +                   \
-                              sx2 * params.seedXStrides[2] +                   \
-                              sx3 * params.seedXStrides[3];                    \
-        const ulong yOffset = sx0 * params.seedYStrides[0] +                   \
-                              sx1 * params.seedYStrides[1] +                   \
-                              sx2 * params.seedYStrides[2] +                   \
-                              sx3 * params.seedYStrides[3];                    \
-        const uint x = seedX[xOffset];                                         \
-        const uint y = seedY[yOffset];                                         \
-        if (x < width && y < height) {                                         \
-            output[ulong(x) * params.imageStrides[0] +                         \
-                   ulong(y) * params.imageStrides[1]] = TYPE(2);               \
-        }                                                                       \
-    }                                                                           \
-    bool changed = true;                                                       \
-    while (changed) {                                                          \
-        changed = false;                                                       \
-        for (ulong y = 0; y < height; ++y) {                                   \
-            for (ulong x = 0; x < width; ++x) {                                \
-                const ulong offset = x * params.imageStrides[0] +              \
-                                     y * params.imageStrides[1];               \
-                if (output[offset] != TYPE(2)) continue;                       \
-                const long firstY = max(long(y) - 1, long(0));                 \
-                const long lastY = min(long(y) + 1, long(height) - 1);         \
-                const long firstX = max(long(x) - 1, long(0));                 \
-                const long lastX = min(long(x) + 1, long(width) - 1);          \
-                for (long ny = firstY; ny <= lastY; ++ny) {                    \
-                    for (long nx = firstX; nx <= lastX; ++nx) {                \
-                        const ulong neighbor = ulong(nx) *                     \
-                                                   params.imageStrides[0] +    \
-                                               ulong(ny) *                     \
-                                                   params.imageStrides[1];     \
-                        if (output[neighbor] != TYPE(0)) continue;              \
-                        const TYPE value = image[neighbor];                    \
-                        if (value >= lower && value <= upper) {                \
-                            output[neighbor] = TYPE(2);                         \
-                            changed = true;                                    \
-                        } else {                                                \
-                            output[neighbor] = TYPE(1);                         \
-                        }                                                       \
-                    }                                                           \
-                }                                                               \
-            }                                                                   \
-        }                                                                       \
-    }                                                                           \
-    for (ulong index = 0; index < pixels; ++index) {                           \
-        const ulong x = index % width;                                         \
-        const ulong y = index / width;                                         \
-        const ulong offset = x * params.imageStrides[0] +                      \
-                             y * params.imageStrides[1];                       \
-        output[offset] = output[offset] == TYPE(2) ? newValue : TYPE(0);       \
-    }                                                                           \
+kernel void flood_fill_state_init(device atomic_uint* state [[buffer(0)]],
+                                  constant ulong& count [[buffer(1)]],
+                                  uint gid [[thread_position_in_grid]]) {
+    if (gid < count) atomic_store_explicit(state + gid, 0u,
+                                           memory_order_relaxed);
 }
 
-DEFINE_FLOOD_FILL(flood_fill_float, float)
-DEFINE_FLOOD_FILL(flood_fill_uint, uint)
-DEFINE_FLOOD_FILL(flood_fill_ushort, ushort)
-DEFINE_FLOOD_FILL(flood_fill_uchar, uchar)
+kernel void flood_fill_seed_state(const device uint* seedX [[buffer(0)]],
+                                  const device uint* seedY [[buffer(1)]],
+                                  device atomic_uint* state [[buffer(2)]],
+                                  constant FloodFillParams& params
+                                      [[buffer(3)]],
+                                  uint gid [[thread_position_in_grid]]) {
+    const ulong seedCount = params.seedDims[0] * params.seedDims[1] *
+                            params.seedDims[2] * params.seedDims[3];
+    if (gid >= seedCount) return;
+
+    ulong q = gid;
+    const ulong s0 = q % params.seedDims[0];
+    q /= params.seedDims[0];
+    const ulong s1 = q % params.seedDims[1];
+    q /= params.seedDims[1];
+    const ulong s2 = q % params.seedDims[2];
+    const ulong s3 = q / params.seedDims[2];
+    const ulong seedOffset = s0 * params.seedXStrides[0] +
+                             s1 * params.seedXStrides[1] +
+                             s2 * params.seedXStrides[2] +
+                             s3 * params.seedXStrides[3];
+    const ulong seedYOffset = s0 * params.seedYStrides[0] +
+                              s1 * params.seedYStrides[1] +
+                              s2 * params.seedYStrides[2] +
+                              s3 * params.seedYStrides[3];
+    const uint x = seedX[seedOffset];
+    const uint y = seedY[seedYOffset];
+    if (x < params.imageDims[0] && y < params.imageDims[1]) {
+        const ulong index = ulong(x) + ulong(y) * params.imageDims[0];
+        atomic_store_explicit(state + index, 2u, memory_order_relaxed);
+    }
+}
+
+#define DEFINE_FLOOD_FILL_STEP(NAME, TYPE)                                  \
+    kernel void NAME(                                                       \
+        const device TYPE* image [[buffer(0)]],                             \
+        device atomic_uint* changed [[buffer(1)]],                          \
+        device atomic_uint* state [[buffer(2)]],                             \
+        constant FloodFillParams& params [[buffer(3)]],                     \
+        constant TYPE& lower [[buffer(4)]],                                 \
+        constant TYPE& upper [[buffer(5)]],                                 \
+        uint gid [[thread_position_in_grid]]) {                             \
+        const ulong width = params.imageDims[0];                            \
+        const ulong height = params.imageDims[1];                           \
+        const ulong total = width * height;                                 \
+        if (gid >= total ||                                                  \
+            atomic_load_explicit(state + gid, memory_order_relaxed) != 2u)  \
+            return;                                                          \
+        const ulong x = gid % width;                                        \
+        const ulong y = gid / width;                                        \
+        for (long ny = max(long(y) - 1, 0L);                                \
+             ny <= min(long(y) + 1, long(height) - 1); ++ny) {             \
+            for (long nx = max(long(x) - 1, 0L);                            \
+                 nx <= min(long(x) + 1, long(width) - 1); ++nx) {           \
+                const ulong neighborIndex = ulong(nx) + ulong(ny) * width;  \
+                uint expected = 0u;                                         \
+                const ulong imageOffset = ulong(nx) *                      \
+                                              params.imageStrides[0] +       \
+                                          ulong(ny) *                       \
+                                              params.imageStrides[1];        \
+                const TYPE value = image[imageOffset];                      \
+                const uint next = value >= lower && value <= upper ? 2u     \
+                                                                   : 1u;    \
+                bool claimed = atomic_compare_exchange_weak_explicit(       \
+                    state + neighborIndex, &expected, next,                 \
+                    memory_order_relaxed, memory_order_relaxed);            \
+                while (!claimed && expected == 0u) {                        \
+                    expected = 0u;                                          \
+                    claimed = atomic_compare_exchange_weak_explicit(        \
+                        state + neighborIndex, &expected, next,             \
+                        memory_order_relaxed, memory_order_relaxed);        \
+                }                                                           \
+                if (claimed && next == 2u) {                                \
+                    atomic_store_explicit(changed, 1u, memory_order_relaxed);\
+                }                                                           \
+            }                                                               \
+        }                                                                   \
+    }
+
+#define DEFINE_FLOOD_FILL_FINALIZE(NAME, TYPE)                              \
+    kernel void NAME(                                                       \
+        const device atomic_uint* state [[buffer(0)]],                      \
+        device TYPE* output [[buffer(1)]],                                  \
+        constant TYPE& newValue [[buffer(2)]],                              \
+        uint gid [[thread_position_in_grid]]) {                             \
+        output[gid] = atomic_load_explicit(state + gid, memory_order_relaxed)\
+                           == 2u                                             \
+                       ? newValue                                           \
+                       : TYPE(0);                                           \
+    }
+
+DEFINE_FLOOD_FILL_STEP(flood_fill_step_float, float)
+DEFINE_FLOOD_FILL_STEP(flood_fill_step_uint, uint)
+DEFINE_FLOOD_FILL_STEP(flood_fill_step_ushort, ushort)
+DEFINE_FLOOD_FILL_STEP(flood_fill_step_uchar, uchar)
+
+DEFINE_FLOOD_FILL_FINALIZE(flood_fill_finalize_float, float)
+DEFINE_FLOOD_FILL_FINALIZE(flood_fill_finalize_uint, uint)
+DEFINE_FLOOD_FILL_FINALIZE(flood_fill_finalize_ushort, ushort)
+DEFINE_FLOOD_FILL_FINALIZE(flood_fill_finalize_uchar, uchar)

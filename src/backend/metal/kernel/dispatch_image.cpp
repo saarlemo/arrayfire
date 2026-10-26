@@ -34,6 +34,26 @@ struct HistogramZeroParams {
     uint64_t count;
 };
 
+const char* floodFillStepKernelName(const af_dtype type) noexcept {
+    switch (type) {
+        case f32: return "flood_fill_step_float";
+        case u32: return "flood_fill_step_uint";
+        case u16: return "flood_fill_step_ushort";
+        case u8: return "flood_fill_step_uchar";
+        default: return nullptr;
+    }
+}
+
+const char* floodFillFinalizeKernelName(const af_dtype type) noexcept {
+    switch (type) {
+        case f32: return "flood_fill_finalize_float";
+        case u32: return "flood_fill_finalize_uint";
+        case u16: return "flood_fill_finalize_ushort";
+        case u8: return "flood_fill_finalize_uchar";
+        default: return nullptr;
+    }
+}
+
 }  // namespace
 
 bool supportsMetalHistogram(const af_dtype type) noexcept {
@@ -449,13 +469,19 @@ void launchMetalConvertPivot(BufferParam o, size_t ob, const af::dim4& od,
                          "convert_pivot", "pivot conversion");
 }
 
-void launchMetalFloodFill(
-    BufferParam output, const size_t outputBytes, const af::dim4& imageDims,
-    const af::dim4& imageStrides, BufferParam image, const size_t imageBytes,
-    BufferParam seedX, const size_t seedXBytes, const af::dim4& seedDims,
-    const af::dim4& seedXStrides, BufferParam seedY, const size_t seedYBytes,
-    const af::dim4& seedYStrides, const void* newValue, const void* lower,
-    const void* upper, const size_t valueBytes, const af_dtype type) {
+void launchMetalFloodFillStateInit(BufferParam state, const size_t stateBytes,
+                                   const size_t stateElements) {
+    const uint64_t count = static_cast<uint64_t>(stateElements);
+    launchOutputKernel(state, stateBytes, stateElements, &count, sizeof(count),
+                       "flood_fill_state_init", "flood fill state init");
+}
+
+void launchMetalFloodFillSeedState(
+    BufferParam state, const size_t stateBytes, BufferParam seedX,
+    const size_t seedXBytes, BufferParam seedY, const size_t seedYBytes,
+    const af::dim4& imageDims, const af::dim4& imageStrides,
+    const af::dim4& seedDims, const af::dim4& seedXStrides,
+    const af::dim4& seedYStrides) {
     FloodFillParams params{};
     for (int i = 0; i < 4; ++i) {
         params.imageDims[i]    = static_cast<uint64_t>(imageDims[i]);
@@ -464,10 +490,76 @@ void launchMetalFloodFill(
         params.seedXStrides[i] = static_cast<uint64_t>(seedXStrides[i]);
         params.seedYStrides[i] = static_cast<uint64_t>(seedYStrides[i]);
     }
-    launchFloodFillKernel(output, outputBytes, image, imageBytes, seedX,
-                          seedXBytes, seedY, seedYBytes, &params,
-                          sizeof(params), newValue, lower, upper, valueBytes,
-                          floodFillFunctionName(type));
+    const size_t seedCount = static_cast<size_t>(seedDims.elements());
+    launchTwoInputKernel(state, stateBytes, seedX, seedXBytes, seedY,
+                         seedYBytes, &params, sizeof(params), seedCount,
+                         "flood_fill_seed_state", "flood fill seed init");
+}
+
+void launchMetalFloodFillStep(
+    BufferParam state, const size_t stateBytes, BufferParam image,
+    const size_t imageBytes, BufferParam changed, const size_t changedBytes,
+    const af::dim4& imageDims, const af::dim4& imageStrides,
+    const void* lower, const void* upper, const size_t valueBytes,
+    const af_dtype type) {
+    const char* functionName = floodFillStepKernelName(type);
+    if (!functionName)
+        AF_ERROR("Flood fill type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    const size_t total = static_cast<size_t>(imageDims[0]) *
+                         static_cast<size_t>(imageDims[1]);
+    if (stateBytes == 0 || changedBytes == 0 || total == 0) return;
+    UNUSED(imageBytes);
+    if (!state.buffer || !image.buffer || !changed.buffer)
+        AF_ERROR("Could not allocate Metal buffers", AF_ERR_NO_MEM);
+
+    FloodFillParams params{};
+    for (int i = 0; i < 4; ++i) {
+        params.imageDims[i]    = static_cast<uint64_t>(imageDims[i]);
+        params.imageStrides[i] = static_cast<uint64_t>(imageStrides[i]);
+    }
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    auto* pipeline = metalPipeline(functionName);
+    encoder->setComputePipelineState(pipeline);
+    encoder->setBuffer(image.buffer, image.offset, 0);
+    encoder->setBuffer(changed.buffer, changed.offset, 1);
+    encoder->setBuffer(state.buffer, state.offset, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->setBytes(lower, valueBytes, 4);
+    encoder->setBytes(upper, valueBytes, 5);
+    const auto width =
+        std::min<NS::UInteger>(256, pipeline->maxTotalThreadsPerThreadgroup());
+    encoder->dispatchThreads(MTL::Size(total, 1, 1), MTL::Size(width, 1, 1));
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    syncCommandQueue();
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal flood fill step failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
+}
+
+void launchMetalFloodFillFinalize(
+    BufferParam output, const size_t outputBytes,
+    const af::dim4& outputDims, BufferParam state, const size_t stateBytes,
+    std::shared_ptr<MTL::Buffer> stateLifetime, const void* newValue,
+    const size_t valueBytes, const af_dtype type) {
+    const char* functionName = floodFillFinalizeKernelName(type);
+    if (!functionName)
+        AF_ERROR("Flood fill type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    launchSingleInputKernel(output, outputBytes, outputDims, state, stateBytes,
+                            newValue, valueBytes, functionName,
+                            "flood fill finalize",
+                            std::move(stateLifetime));
 }
 
 void launchMetalCannyNonmax(

@@ -83,13 +83,6 @@ void launchFourInputThreeOutputKernel(
     const void* params, size_t paramsBytes, size_t dispatchTotal,
     const char* functionName, const char* operationName);
 
-void launchFloodFillKernel(
-    BufferParam output, size_t outputBytes, BufferParam image,
-    size_t imageBytes, BufferParam seedX, size_t seedXBytes, BufferParam seedY,
-    size_t seedYBytes, const void* params, size_t paramsBytes,
-    const void* newValue, const void* lower, const void* upper,
-    size_t valueBytes, const char* functionName);
-
 }  // namespace kernel
 }  // namespace metal
 }  // namespace arrayfire

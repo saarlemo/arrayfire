@@ -221,16 +221,6 @@ const char* luFactorFunctionName(const af_dtype t) {
                                : nullptr;
 }
 
-const char* floodFillFunctionName(const af_dtype type) {
-    switch (type) {
-        case f32: return "flood_fill_float";
-        case u32: return "flood_fill_uint";
-        case u16: return "flood_fill_ushort";
-        case u8: return "flood_fill_uchar";
-        default: return nullptr;
-    }
-}
-
 const char* indexFunctionName(const af_dtype type) {
     switch (type) {
         case f32: return "index_float";
