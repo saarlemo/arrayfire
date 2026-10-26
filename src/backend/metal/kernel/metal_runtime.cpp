@@ -259,7 +259,8 @@ void launchSingleInputKernel(BufferParam output, const size_t outputBytes,
                              const af::dim4& outputDims, BufferParam input,
                              const size_t inputBytes, const void* params,
                              const size_t paramsBytes, const char* functionName,
-                             const char* operationName) {
+                             const char* operationName,
+                             std::shared_ptr<MTL::Buffer> inputLifetime) {
     if (outputBytes == 0) return;
     UNUSED(inputBytes);
     if (!input.buffer || !output.buffer)
@@ -284,6 +285,12 @@ void launchSingleInputKernel(BufferParam output, const size_t outputBytes,
         std::min<NS::UInteger>(256, pipeline->maxTotalThreadsPerThreadgroup());
     encoder->dispatchThreads(MTL::Size(total, 1, 1), MTL::Size(width, 1, 1));
     encoder->endEncoding();
+    if (inputLifetime) {
+        commandBuffer->addCompletedHandler(
+            [lifetime = std::move(inputLifetime)](MTL::CommandBuffer*) {
+                static_cast<void>(lifetime);
+            });
+    }
     submitCommandBuffer(commandBuffer.get());
     if (commandBuffer->status() == MTL::CommandBufferStatusError) {
         const std::string fallback =

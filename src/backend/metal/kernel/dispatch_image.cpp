@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace arrayfire {
@@ -599,24 +600,32 @@ void launchMetalRegions(BufferParam output, const size_t outputBytes,
                             "connected components");
 }
 
-void launchMetalAnisotropicDiffusion(BufferParam inout, const size_t bytes,
-                                     const af::dim4& dims,
-                                     const af::dim4& strides, const float dt,
-                                     const float mct,
+void launchMetalAnisotropicDiffusion(BufferParam output,
+                                     const size_t outputBytes,
+                                     const af::dim4& outputDims,
+                                     const af::dim4& outputStrides,
+                                     BufferParam input,
+                                     const size_t inputBytes,
+                                     const af::dim4& inputStrides,
+                                     std::shared_ptr<MTL::Buffer> inputLifetime,
+                                     const float dt, const float mct,
                                      const af_flux_function flux,
                                      const bool curvature) {
     DiffusionParams params{};
     for (int i = 0; i < 4; ++i) {
-        params.dims[i]    = static_cast<uint64_t>(dims[i]);
-        params.strides[i] = static_cast<uint64_t>(strides[i]);
+        params.dims[i]           = static_cast<uint64_t>(outputDims[i]);
+        params.inputStrides[i]   = static_cast<uint64_t>(inputStrides[i]);
+        params.outputStrides[i]  = static_cast<uint64_t>(outputStrides[i]);
     }
     params.dt        = dt;
     params.mct       = mct;
     params.flux      = static_cast<uint32_t>(flux);
     params.curvature = curvature;
-    launchSingleInputKernel(inout, bytes, dims, inout, bytes, &params,
-                            sizeof(params), "anisotropic_diffusion_float",
-                            "anisotropic diffusion");
+    launchSingleInputKernel(output, outputBytes, outputDims, input, inputBytes,
+                            &params, sizeof(params),
+                            "anisotropic_diffusion_float",
+                            "anisotropic diffusion",
+                            std::move(inputLifetime));
 }
 
 }  // namespace kernel

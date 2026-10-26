@@ -13,7 +13,8 @@ using namespace metal;
 
 struct DiffusionParams {
     ulong dims[4];
-    ulong strides[4];
+    ulong inputStrides[4];
+    ulong outputStrides[4];
     float dt;
     float mct;
     uint flux;
@@ -84,37 +85,46 @@ kernel void anisotropic_diffusion_float(
     device float* output [[buffer(1)]],
     constant DiffusionParams& params [[buffer(2)]],
     uint gid [[thread_position_in_grid]]) {
-    if (gid != 0) return;
-    const ulong total = params.dims[0] * params.dims[1] * params.dims[2] *
-                        params.dims[3];
-    for (ulong index = 0; index < total; ++index) output[index] = input[index];
-    for (ulong w = 0; w < params.dims[3]; ++w) {
-        for (ulong z = 0; z < params.dims[2]; ++z) {
-            const ulong base = z * params.strides[2] + w * params.strides[3];
-            for (ulong y = 1; y + 1 < params.dims[1]; ++y) {
-                for (ulong x = 1; x + 1 < params.dims[0]; ++x) {
-                    const ulong center = base + x * params.strides[0] +
-                                         y * params.strides[1];
-                    const long sx = long(params.strides[0]);
-                    const long sy = long(params.strides[1]);
-                    const long c = long(center);
-                    float delta;
-                    if (params.curvature != 0) {
-                        delta = curvature_update(
-                            params.mct, output[c - sy - sx], output[c - sy],
-                            output[c - sy + sx], output[c - sx], output[c],
-                            output[c + sx], output[c + sy - sx],
-                            output[c + sy], output[c + sy + sx]);
-                    } else {
-                        delta = gradient_update(
-                            params.mct, output[c - sy - sx], output[c - sy],
-                            output[c - sy + sx], output[c - sx], output[c],
-                            output[c + sx], output[c + sy - sx],
-                            output[c + sy], output[c + sy + sx], params.flux);
-                    }
-                    output[center] += delta * params.dt;
-                }
-            }
-        }
+    const ulong width = params.dims[0];
+    const ulong height = params.dims[1];
+    const ulong plane = width * height;
+    const ulong total = plane * params.dims[2] * params.dims[3];
+    if (gid >= total) return;
+
+    const ulong x = gid % width;
+    const ulong y = (gid / width) % height;
+    const ulong z = (gid / plane) % params.dims[2];
+    const ulong w = gid / (plane * params.dims[2]);
+    const ulong inputBase = z * params.inputStrides[2] +
+                            w * params.inputStrides[3];
+    const ulong outputBase = z * params.outputStrides[2] +
+                             w * params.outputStrides[3];
+    const ulong inputCenter = inputBase + x * params.inputStrides[0] +
+                              y * params.inputStrides[1];
+    const ulong outputCenter = outputBase + x * params.outputStrides[0] +
+                               y * params.outputStrides[1];
+
+    // Keep the existing fixed-border behavior. Every pixel reads only from
+    // the immutable input, so the update is race-free and parallel over pixels.
+    if (x == 0 || y == 0 || x + 1 >= width || y + 1 >= height) {
+        output[outputCenter] = input[inputCenter];
+        return;
     }
+
+    const long sx = long(params.inputStrides[0]);
+    const long sy = long(params.inputStrides[1]);
+    const long c = long(inputCenter);
+    float delta;
+    if (params.curvature != 0) {
+        delta = curvature_update(
+            params.mct, input[c - sy - sx], input[c - sy],
+            input[c - sy + sx], input[c - sx], input[c], input[c + sx],
+            input[c + sy - sx], input[c + sy], input[c + sy + sx]);
+    } else {
+        delta = gradient_update(
+            params.mct, input[c - sy - sx], input[c - sy],
+            input[c - sy + sx], input[c - sx], input[c], input[c + sx],
+            input[c + sy - sx], input[c + sy], input[c + sy + sx], params.flux);
+    }
+    output[outputCenter] = input[inputCenter] + delta * params.dt;
 }

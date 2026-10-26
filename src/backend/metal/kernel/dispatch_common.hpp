@@ -726,7 +726,8 @@ struct RegionsParams {
 
 struct DiffusionParams {
     uint64_t dims[4];
-    uint64_t strides[4];
+    uint64_t inputStrides[4];
+    uint64_t outputStrides[4];
     float dt;
     float mct;
     uint32_t flux;

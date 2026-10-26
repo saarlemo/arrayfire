@@ -14,6 +14,7 @@
 #include <platform.hpp>
 
 #include <type_traits>
+#include <utility>
 
 namespace arrayfire {
 namespace metal {
@@ -22,8 +23,12 @@ void anisotropicDiffusion(Array<T>& inout, const float dt, const float mct,
                           const af::fluxFunction fftype,
                           const af::diffusionEq eq) {
     if constexpr (std::is_same<T, float>::value) {
-        getQueue().enqueueNative(kernel::anisotropicDiffusionMetal, inout, dt,
-                                 mct, fftype, eq == AF_DIFFUSION_MCDE);
+        inout.eval();
+        Array<T> output = createEmptyArray<T>(inout.dims());
+        getQueue().enqueueNative(kernel::anisotropicDiffusionMetal, output,
+                                 inout, inout.getData(), dt, mct, fftype,
+                                 eq == AF_DIFFUSION_MCDE);
+        inout = std::move(output);
     } else {
         AF_ERROR("Anisotropic diffusion type is not supported by Metal",
                  AF_ERR_NOT_SUPPORTED);

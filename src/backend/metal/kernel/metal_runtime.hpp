@@ -13,6 +13,7 @@
 #include <af/dim4.hpp>
 
 #include <string>
+#include <memory>
 
 namespace NS {
 class Error;
@@ -48,7 +49,8 @@ void launchSingleInputKernel(BufferParam output, size_t outputBytes,
                              const af::dim4& outputDims, BufferParam input,
                              size_t inputBytes, const void* params,
                              size_t paramsBytes, const char* functionName,
-                             const char* operationName);
+                             const char* operationName,
+                             std::shared_ptr<MTL::Buffer> inputLifetime = {});
 
 void launchTwoInputKernel(BufferParam output, size_t outputBytes,
                           BufferParam first, size_t firstBytes,
