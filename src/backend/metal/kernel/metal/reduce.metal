@@ -125,56 +125,113 @@ float2 reduceCombine(const float2 lhs, const float2 rhs,
         value = p.operation == REDUCE_MIN ? (MINIMUM) : (MAXIMUM);           \
     if (p.changeNan && reduceIsNan(value)) reduceSetNan(value, p.nanValue);
 
-#define DEFINE_REDUCE(NAME, INPUT_TYPE, OUTPUT_TYPE, COMPUTE_TYPE, ONE,       \
-                      MINIMUM, MAXIMUM)                                      \
-kernel void NAME(const device INPUT_TYPE* input [[buffer(0)]],               \
-                 device OUTPUT_TYPE* output [[buffer(1)]],                   \
-                 constant ReduceParams& p [[buffer(2)]],                     \
-                 uint gid [[thread_position_in_grid]]) {                     \
+// The full reduction path uses one threadgroup per output slice and reduction
+// chunk. Each lane reads at most one input value before the threadgroup tree
+// combine, so long reductions expose work across the reduction dimension.
+#define DEFINE_REDUCE_ALL(NAME, INPUT_TYPE, OUTPUT_TYPE, COMPUTE_TYPE, ONE,   \
+                          MINIMUM, MAXIMUM)                                  \
+kernel void NAME##_partial(                                                  \
+    const device INPUT_TYPE* input [[buffer(0)]],                            \
+    device COMPUTE_TYPE* partials [[buffer(1)]],                             \
+    constant ReduceParams& p [[buffer(2)]],                                  \
+    uint3 group [[threadgroup_position_in_grid]],                            \
+    uint lane [[thread_index_in_threadgroup]]) {                             \
+    threadgroup COMPUTE_TYPE values[256];                                    \
     const ulong outputTotal = p.outputDims[0] * p.outputDims[1] *            \
                               p.outputDims[2] * p.outputDims[3];              \
-    if (gid >= outputTotal) return;                                           \
+    const ulong inputTotal = p.inputDims[0] * p.inputDims[1] *               \
+                             p.inputDims[2] * p.inputDims[3];                 \
+    const ulong length = p.reduceAll ? inputTotal : p.inputDims[p.dimension];\
+    const ulong chunks = max((length + 255) / 256, 1UL);                     \
+    const ulong outputIndex = ulong(group.x) / chunks;                       \
+    const ulong chunk = ulong(group.x) % chunks;                             \
+    if (outputIndex >= outputTotal) return;                                  \
     COMPUTE_TYPE result = COMPUTE_TYPE(0);                                   \
     if (p.operation == REDUCE_MUL || p.operation == REDUCE_AND)              \
         result = (ONE);                                                       \
     if (p.operation == REDUCE_MIN) result = (MINIMUM);                       \
     if (p.operation == REDUCE_MAX) result = (MAXIMUM);                       \
-    if (p.reduceAll) {                                                        \
-        const ulong inputTotal = p.inputDims[0] * p.inputDims[1] *           \
-                                 p.inputDims[2] * p.inputDims[3];             \
-        for (ulong linear = 0; linear < inputTotal; ++linear) {              \
-            ulong q = linear;                                                \
-            long inputIndex = 0;                                             \
+    const ulong i = chunk * 256 + lane;                                      \
+    if (i < length) {                                                        \
+        long inputIndex = 0;                                                 \
+        if (p.reduceAll) {                                                   \
+            ulong q = i;                                                     \
             for (uint d = 0; d < 4; ++d) {                                  \
                 const ulong coordinate = q % p.inputDims[d];                 \
                 q /= p.inputDims[d];                                         \
                 inputIndex += long(coordinate) * p.inputStrides[d];          \
             }                                                                \
-            REDUCE_VALUE(INPUT_TYPE, COMPUTE_TYPE, inputIndex, MINIMUM,      \
-                         MAXIMUM)                                             \
-            result = reduceCombine(result, value, p.operation);              \
+        } else {                                                             \
+            ulong q = outputIndex;                                           \
+            for (uint d = 0; d < 4; ++d) {                                  \
+                const ulong coordinate = q % p.outputDims[d];                \
+                q /= p.outputDims[d];                                         \
+                inputIndex += long(coordinate) * p.inputStrides[d];          \
+            }                                                                \
+            inputIndex += long(i) * p.inputStrides[p.dimension];             \
         }                                                                    \
-        output[0] = OUTPUT_TYPE(result);                                     \
-        return;                                                              \
-    }                                                                        \
-    ulong q = gid;                                                           \
-    long outputIndex = 0;                                                    \
-    long inputBase = 0;                                                      \
-    for (uint d = 0; d < 4; ++d) {                                          \
-        const ulong coordinate = q % p.outputDims[d];                        \
-        q /= p.outputDims[d];                                                \
-        outputIndex += long(coordinate) * p.outputStrides[d];                \
-        inputBase += long(coordinate) * p.inputStrides[d];                   \
-    }                                                                        \
-    const ulong length = p.inputDims[p.dimension];                           \
-    const long stride = p.inputStrides[p.dimension];                         \
-    for (ulong i = 0; i < length; ++i) {                                    \
-        const long inputIndex = inputBase + long(i) * stride;                \
         REDUCE_VALUE(INPUT_TYPE, COMPUTE_TYPE, inputIndex, MINIMUM, MAXIMUM) \
-        result = reduceCombine(result, value, p.operation);                  \
+        result = value;                                                      \
     }                                                                        \
-    output[outputIndex] = OUTPUT_TYPE(result);                               \
+    values[lane] = result;                                                   \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                         \
+    for (uint stride = 128; stride > 0; stride >>= 1) {                     \
+        if (lane < stride)                                                   \
+            values[lane] = reduceCombine(values[lane], values[lane + stride],\
+                                         p.operation);                       \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                     \
+    }                                                                        \
+    if (lane == 0) partials[group.x] = values[0];                            \
+}                                                                            \
+kernel void NAME##_final(                                                   \
+    const device COMPUTE_TYPE* partials [[buffer(0)]],                      \
+    device OUTPUT_TYPE* output [[buffer(1)]],                                \
+    constant ReduceParams& p [[buffer(2)]],                                  \
+    uint outputLinear [[threadgroup_position_in_grid]],                      \
+    uint lane [[thread_index_in_threadgroup]]) {                             \
+    threadgroup COMPUTE_TYPE values[256];                                    \
+    const ulong outputTotal = p.outputDims[0] * p.outputDims[1] *            \
+                              p.outputDims[2] * p.outputDims[3];              \
+    const ulong inputTotal = p.inputDims[0] * p.inputDims[1] *               \
+                             p.inputDims[2] * p.inputDims[3];                 \
+    const ulong length = p.reduceAll ? inputTotal : p.inputDims[p.dimension];\
+    const ulong chunks = max((length + 255) / 256, 1UL);                     \
+    if (ulong(outputLinear) >= outputTotal) return;                         \
+    COMPUTE_TYPE result = COMPUTE_TYPE(0);                                   \
+    if (p.operation == REDUCE_MUL || p.operation == REDUCE_AND)              \
+        result = (ONE);                                                       \
+    if (p.operation == REDUCE_MIN) result = (MINIMUM);                       \
+    if (p.operation == REDUCE_MAX) result = (MAXIMUM);                       \
+    for (ulong i = lane; i < chunks; i += 256)                               \
+        result = reduceCombine(result,                                       \
+                               partials[ulong(outputLinear) * chunks + i],   \
+                               p.operation);                                 \
+    values[lane] = result;                                                   \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                         \
+    for (uint stride = 128; stride > 0; stride >>= 1) {                     \
+        if (lane < stride)                                                   \
+            values[lane] = reduceCombine(values[lane], values[lane + stride],\
+                                         p.operation);                       \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                     \
+    }                                                                        \
+    if (lane == 0) {                                                         \
+        ulong q = outputLinear;                                              \
+        long outputOffset = 0;                                               \
+        if (!p.reduceAll) {                                                  \
+            for (uint d = 0; d < 4; ++d) {                                  \
+                const ulong coordinate = q % p.outputDims[d];                \
+                q /= p.outputDims[d];                                         \
+                outputOffset += long(coordinate) * p.outputStrides[d];       \
+            }                                                                \
+        }                                                                    \
+        output[outputOffset] = OUTPUT_TYPE(values[0]);                       \
+    }                                                                        \
 }
+
+#define DEFINE_REDUCE(NAME, INPUT_TYPE, OUTPUT_TYPE, COMPUTE_TYPE, ONE,       \
+                      MINIMUM, MAXIMUM)                                      \
+    DEFINE_REDUCE_ALL(NAME, INPUT_TYPE, OUTPUT_TYPE, COMPUTE_TYPE, ONE,      \
+                      MINIMUM, MAXIMUM)
 
 #define REDUCE_FLOAT(NAME, INPUT, OUTPUT)                                    \
     DEFINE_REDUCE(NAME, INPUT, OUTPUT, float, 1.0f, INFINITY, -INFINITY)

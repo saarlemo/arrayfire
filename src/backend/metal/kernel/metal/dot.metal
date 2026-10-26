@@ -20,32 +20,81 @@ inline float2 dotMultiply(float2 a,float2 b) {
     return float2(a.x*b.x-a.y*b.y,a.x*b.y+a.y*b.x);
 }
 
-kernel void dot_float(const device float* lhs [[buffer(0)]],
-                      const device float* rhs [[buffer(1)]],
-                      device float* output [[buffer(2)]],
-                      constant DotParams& p [[buffer(3)]],
-                      uint gid [[thread_position_in_grid]]) {
-    if (gid) return;
-    float value=0.0f;
-    for (ulong i=0;i<p.length;++i)
-        value+=lhs[i*p.lhsStride]*rhs[i*p.rhsStride];
-    output[0]=value;
+kernel void dot_float_partial(const device float* lhs [[buffer(0)]],
+                              const device float* rhs [[buffer(1)]],
+                              device float* partials [[buffer(2)]],
+                              constant DotParams& p [[buffer(3)]],
+                              uint group [[threadgroup_position_in_grid]],
+                              uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float values[256];
+    const ulong i = ulong(group) * 256 + lane;
+    values[lane] = i < p.length
+                       ? lhs[i * p.lhsStride] * rhs[i * p.rhsStride]
+                       : 0.0f;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) values[lane] += values[lane + stride];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane == 0) partials[group] = values[0];
 }
 
-kernel void dot_cfloat(const device float2* lhs [[buffer(0)]],
-                       const device float2* rhs [[buffer(1)]],
-                       device float2* output [[buffer(2)]],
-                       constant DotParams& p [[buffer(3)]],
-                       uint gid [[thread_position_in_grid]]) {
-    if (gid) return;
-    float2 value=float2(0.0f);
-    for (ulong i=0;i<p.length;++i) {
-        float2 a=lhs[i*p.lhsStride],b=rhs[i*p.rhsStride];
-        if (p.conjugateLhs) a=dotConjugate(a);
-        if (p.conjugateRhs) b=dotConjugate(b);
-        value+=dotMultiply(a,b);
+kernel void dot_float_final(const device float* partials [[buffer(0)]],
+                            device float* output [[buffer(1)]],
+                            constant DotParams& p [[buffer(2)]],
+                            uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float values[256];
+    const ulong chunks = (p.length + 255) / 256;
+    float value = 0.0f;
+    for (ulong i = lane; i < chunks; i += 256) value += partials[i];
+    values[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) values[lane] += values[lane + stride];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    output[0]=value;
+    if (lane == 0) output[0] = values[0];
+}
+
+kernel void dot_cfloat_partial(const device float2* lhs [[buffer(0)]],
+                               const device float2* rhs [[buffer(1)]],
+                               device float2* partials [[buffer(2)]],
+                               constant DotParams& p [[buffer(3)]],
+                               uint group [[threadgroup_position_in_grid]],
+                               uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float2 values[256];
+    const ulong i = ulong(group) * 256 + lane;
+    float2 value = float2(0.0f);
+    if (i < p.length) {
+        float2 a = lhs[i * p.lhsStride], b = rhs[i * p.rhsStride];
+        if (p.conjugateLhs) a = dotConjugate(a);
+        if (p.conjugateRhs) b = dotConjugate(b);
+        value = dotMultiply(a, b);
+    }
+    values[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) values[lane] += values[lane + stride];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane == 0) partials[group] = values[0];
+}
+
+kernel void dot_cfloat_final(const device float2* partials [[buffer(0)]],
+                             device float2* output [[buffer(1)]],
+                             constant DotParams& p [[buffer(2)]],
+                             uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float2 values[256];
+    const ulong chunks = (p.length + 255) / 256;
+    float2 value = float2(0.0f);
+    for (ulong i = lane; i < chunks; i += 256) value += partials[i];
+    values[lane] = value;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) values[lane] += values[lane + stride];
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane == 0) output[0] = values[0];
 }
 
 struct GemmParams {

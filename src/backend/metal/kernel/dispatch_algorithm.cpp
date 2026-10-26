@@ -20,6 +20,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -620,9 +622,85 @@ void launchMetalMean(BufferParam output, const size_t outputBytes,
     }
     params.dimension = static_cast<uint32_t>(dimension);
     params.reduceAll = reduceAll;
-    launchSingleInputKernel(output, outputBytes, outputDims, input, inputBytes,
-                            &params, sizeof(params),
-                            meanFunctionName(inputType, outputType), "mean");
+    const size_t outputCount = static_cast<size_t>(outputDims.elements());
+    const size_t reductionLength = static_cast<size_t>(
+        reduceAll ? inputDims.elements() : inputDims[dimension]);
+    constexpr size_t chunkSize = 4096;
+    constexpr size_t threadgroupSize = 256;
+    if (outputCount == 0) return;
+    UNUSED(outputBytes);
+    UNUSED(inputBytes);
+
+    const char* baseName = meanFunctionName(inputType, outputType);
+    if (!baseName)
+        AF_ERROR("Mean type is not supported by Metal", AF_ERR_NOT_SUPPORTED);
+    const std::string partialName = std::string(baseName) + "_partial";
+    const std::string finalName = std::string(baseName) + "_final";
+    auto* partialPipeline = metalPipeline(partialName.c_str());
+    auto* finalPipeline = metalPipeline(finalName.c_str());
+    const size_t chunkCount =
+        std::max<size_t>((reductionLength + chunkSize - 1) / chunkSize, 1);
+    if (outputCount > std::numeric_limits<size_t>::max() / chunkCount)
+        AF_ERROR("Metal mean scratch size overflow", AF_ERR_SIZE);
+    const size_t partialCount = outputCount * chunkCount;
+    if (partialCount > std::numeric_limits<size_t>::max() / sizeof(uint64_t))
+        AF_ERROR("Metal mean scratch size overflow", AF_ERR_SIZE);
+    const size_t partialBytes = partialCount * sizeof(uint64_t);
+    const size_t groupCount = partialCount;
+    if (groupCount > std::numeric_limits<uint32_t>::max() ||
+        outputCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal mean dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    auto partials = NS::TransferPtr(metalDevice()->newBuffer(
+        partialBytes, MTL::ResourceStorageModePrivate));
+    auto partialCorrections = NS::TransferPtr(metalDevice()->newBuffer(
+        partialBytes, MTL::ResourceStorageModePrivate));
+    if (!partials || !partialCorrections)
+        AF_ERROR("Could not allocate Metal mean scratch", AF_ERR_NO_MEM);
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(partialPipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(partials.get(), 0, 1);
+    encoder->setBuffer(partialCorrections.get(), 0, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->dispatchThreadgroups(MTL::Size(groupCount, 1, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(finalPipeline);
+    encoder->setBuffer(partials.get(), 0, 0);
+    encoder->setBuffer(partialCorrections.get(), 0, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->dispatchThreadgroups(MTL::Size(outputCount, 1, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->endEncoding();
+
+    auto partialLifetime = std::shared_ptr<MTL::Buffer>(
+        partials.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto correctionLifetime = std::shared_ptr<MTL::Buffer>(
+        partialCorrections.get(),
+        [](MTL::Buffer* buffer) { buffer->release(); });
+    partials->retain();
+    partialCorrections->retain();
+    commandBuffer->addCompletedHandler(
+        [values = std::move(partialLifetime),
+         corrections = std::move(correctionLifetime)](MTL::CommandBuffer*) {
+            static_cast<void>(values);
+            static_cast<void>(corrections);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal mean dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 void launchMetalMeanWeighted(
@@ -644,10 +722,110 @@ void launchMetalMeanWeighted(
     }
     params.dimension = static_cast<uint32_t>(dimension);
     params.reduceAll = reduceAll;
-    launchTwoInputKernel(
-        output, outputBytes, input, inputBytes, weights, weightBytes, &params,
-        sizeof(params), static_cast<size_t>(outputDims.elements()),
-        meanWeightedFunctionName(valueType, weightType), "weighted mean");
+    const size_t outputCount = static_cast<size_t>(outputDims.elements());
+    const size_t reductionLength = static_cast<size_t>(
+        reduceAll ? inputDims.elements() : inputDims[dimension]);
+    constexpr size_t chunkSize = 4096;
+    constexpr size_t threadgroupSize = 256;
+    if (outputCount == 0) return;
+    UNUSED(outputBytes);
+    UNUSED(inputBytes);
+    UNUSED(weightBytes);
+
+    const char* baseName = meanWeightedFunctionName(valueType, weightType);
+    if (!baseName)
+        AF_ERROR("Weighted mean type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    const std::string partialName = std::string(baseName) + "_partial";
+    const std::string finalName = std::string(baseName) + "_final";
+    auto* partialPipeline = metalPipeline(partialName.c_str());
+    auto* finalPipeline = metalPipeline(finalName.c_str());
+    const size_t chunkCount =
+        std::max<size_t>((reductionLength + chunkSize - 1) / chunkSize, 1);
+    if (outputCount > std::numeric_limits<size_t>::max() / chunkCount)
+        AF_ERROR("Metal weighted-mean scratch size overflow", AF_ERR_SIZE);
+    const size_t partialCount = outputCount * chunkCount;
+    if (partialCount > std::numeric_limits<size_t>::max() / sizeof(uint64_t) ||
+        partialCount > std::numeric_limits<size_t>::max() / sizeof(float))
+        AF_ERROR("Metal weighted-mean scratch size overflow", AF_ERR_SIZE);
+    const size_t groupCount = partialCount;
+    if (groupCount > std::numeric_limits<uint32_t>::max() ||
+        outputCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal weighted-mean dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    auto partialValues = NS::TransferPtr(metalDevice()->newBuffer(
+        partialCount * sizeof(uint64_t), MTL::ResourceStorageModePrivate));
+    auto partialValueCorrections = NS::TransferPtr(metalDevice()->newBuffer(
+        partialCount * sizeof(uint64_t), MTL::ResourceStorageModePrivate));
+    auto partialWeights = NS::TransferPtr(metalDevice()->newBuffer(
+        partialCount * sizeof(float), MTL::ResourceStorageModePrivate));
+    auto partialWeightCorrections = NS::TransferPtr(metalDevice()->newBuffer(
+        partialCount * sizeof(float), MTL::ResourceStorageModePrivate));
+    if (!partialValues || !partialValueCorrections || !partialWeights ||
+        !partialWeightCorrections)
+        AF_ERROR("Could not allocate Metal weighted-mean scratch",
+                 AF_ERR_NO_MEM);
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(partialPipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(weights.buffer, weights.offset, 1);
+    encoder->setBuffer(partialValues.get(), 0, 2);
+    encoder->setBuffer(partialValueCorrections.get(), 0, 3);
+    encoder->setBuffer(partialWeights.get(), 0, 4);
+    encoder->setBuffer(partialWeightCorrections.get(), 0, 5);
+    encoder->setBytes(&params, sizeof(params), 6);
+    encoder->dispatchThreadgroups(MTL::Size(groupCount, 1, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(finalPipeline);
+    encoder->setBuffer(partialValues.get(), 0, 0);
+    encoder->setBuffer(partialValueCorrections.get(), 0, 1);
+    encoder->setBuffer(partialWeights.get(), 0, 2);
+    encoder->setBuffer(partialWeightCorrections.get(), 0, 3);
+    encoder->setBuffer(output.buffer, output.offset, 4);
+    encoder->setBytes(&params, sizeof(params), 5);
+    encoder->dispatchThreadgroups(MTL::Size(outputCount, 1, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->endEncoding();
+
+    auto valuesLifetime = std::shared_ptr<MTL::Buffer>(
+        partialValues.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto weightsLifetime = std::shared_ptr<MTL::Buffer>(
+        partialWeights.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto valueCorrectionsLifetime = std::shared_ptr<MTL::Buffer>(
+        partialValueCorrections.get(),
+        [](MTL::Buffer* buffer) { buffer->release(); });
+    auto weightCorrectionsLifetime = std::shared_ptr<MTL::Buffer>(
+        partialWeightCorrections.get(),
+        [](MTL::Buffer* buffer) { buffer->release(); });
+    partialValues->retain();
+    partialValueCorrections->retain();
+    partialWeights->retain();
+    partialWeightCorrections->retain();
+    commandBuffer->addCompletedHandler(
+        [values = std::move(valuesLifetime),
+         weights = std::move(weightsLifetime),
+         valueCorrections = std::move(valueCorrectionsLifetime),
+         weightCorrections = std::move(weightCorrectionsLifetime)](
+            MTL::CommandBuffer*) {
+            static_cast<void>(values);
+            static_cast<void>(weights);
+            static_cast<void>(valueCorrections);
+            static_cast<void>(weightCorrections);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal weighted-mean dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalApprox(const af_dtype valueType,
@@ -761,10 +939,77 @@ void launchMetalReduce(
     p.reduceAll = reduceAll;
     p.changeNan = changeNan;
     p.nanValue  = static_cast<float>(nanValue);
-    launchSingleInputKernel(output, outputBytes, outputDims, input, inputBytes,
-                            &p, sizeof(p),
-                            reduceFunctionName(inputType, outputType),
-                            "reduction");
+
+    const size_t outputCount = static_cast<size_t>(outputDims.elements());
+    const size_t reductionLength = static_cast<size_t>(
+        reduceAll ? inputDims.elements() : inputDims[dimension]);
+    constexpr size_t chunkSize = 256;
+    if (outputCount == 0) return;
+    UNUSED(inputBytes);
+
+    const char* baseName = reduceFunctionName(inputType, outputType);
+    if (!baseName)
+        AF_ERROR("Reduction type is not supported by Metal", AF_ERR_NOT_SUPPORTED);
+    const std::string partialName = std::string(baseName) + "_partial";
+    const std::string finalName = std::string(baseName) + "_final";
+    auto* partialPipeline = metalPipeline(partialName.c_str());
+    auto* finalPipeline = metalPipeline(finalName.c_str());
+
+    const size_t chunkCount =
+        std::max<size_t>((reductionLength + chunkSize - 1) / chunkSize, 1);
+    if (outputCount > std::numeric_limits<size_t>::max() / chunkCount)
+        AF_ERROR("Metal reduction scratch size overflow", AF_ERR_SIZE);
+    const size_t partialCount = outputCount * chunkCount;
+    // The largest accumulator used by any Metal reduction mapping is 8 bytes.
+    if (partialCount > std::numeric_limits<size_t>::max() / sizeof(uint64_t))
+        AF_ERROR("Metal reduction scratch size overflow", AF_ERR_SIZE);
+    const size_t partialBytes = partialCount * sizeof(uint64_t);
+    const size_t groupCount = outputCount * chunkCount;
+    if (groupCount > std::numeric_limits<uint32_t>::max() ||
+        outputCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal reduction dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    auto partials = NS::TransferPtr(metalDevice()->newBuffer(
+        partialBytes, MTL::ResourceStorageModePrivate));
+    if (!partials)
+        AF_ERROR("Could not allocate Metal reduction scratch", AF_ERR_NO_MEM);
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+
+    encoder->setComputePipelineState(partialPipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(partials.get(), 0, 1);
+    encoder->setBytes(&p, sizeof(p), 2);
+    encoder->dispatchThreadgroups(MTL::Size(groupCount, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+
+    encoder->setComputePipelineState(finalPipeline);
+    encoder->setBuffer(partials.get(), 0, 0);
+    encoder->setBuffer(output.buffer, output.offset, 1);
+    encoder->setBytes(&p, sizeof(p), 2);
+    encoder->dispatchThreadgroups(MTL::Size(outputCount, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->endEncoding();
+
+    auto partialLifetime = std::shared_ptr<MTL::Buffer>(
+        partials.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    partials->retain();
+    commandBuffer->addCompletedHandler(
+        [lifetime = std::move(partialLifetime)](MTL::CommandBuffer*) {
+            static_cast<void>(lifetime);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal reduction dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 void launchMetalReduceByKeyCompact(
@@ -826,10 +1071,88 @@ void launchMetalIReduceAll(BufferParam output, size_t outputBytes,
         p.inputStrides[i] = static_cast<uint64_t>(inputStrides[i]);
     }
     p.isMax = isMax;
-    launchInputTwoOutputKernel(
-        output, locations, outputBytes, input, inputBytes, 1, &p, sizeof(p),
-        ireduceAllFunctionName(type), "all indexed reduction");
     UNUSED(locationsBytes);
+    const size_t inputCount = static_cast<size_t>(inputDims.elements());
+    constexpr size_t chunkSize = 256;
+    UNUSED(outputBytes);
+    UNUSED(inputBytes);
+
+    const char* baseName = ireduceAllFunctionName(type);
+    if (!baseName)
+        AF_ERROR("Indexed reduction type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    const std::string partialName = std::string(baseName) + "_partial";
+    const std::string finalName = std::string(baseName) + "_final";
+    auto* partialPipeline = metalPipeline(partialName.c_str());
+    auto* finalPipeline = metalPipeline(finalName.c_str());
+    const size_t chunkCount =
+        std::max<size_t>((inputCount + chunkSize - 1) / chunkSize, 1);
+    if (chunkCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal indexed-reduction dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    if (chunkCount > std::numeric_limits<size_t>::max() / sizeof(uint64_t))
+        AF_ERROR("Metal indexed-reduction scratch size overflow", AF_ERR_SIZE);
+    auto partialValues = NS::TransferPtr(metalDevice()->newBuffer(
+        chunkCount * sizeof(uint64_t), MTL::ResourceStorageModePrivate));
+    auto partialIndices = NS::TransferPtr(metalDevice()->newBuffer(
+        chunkCount * sizeof(uint32_t), MTL::ResourceStorageModePrivate));
+    auto partialValid = NS::TransferPtr(metalDevice()->newBuffer(
+        chunkCount * sizeof(uint32_t), MTL::ResourceStorageModePrivate));
+    if (!partialValues || !partialIndices || !partialValid)
+        AF_ERROR("Could not allocate Metal indexed-reduction scratch",
+                 AF_ERR_NO_MEM);
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(partialPipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(partialValues.get(), 0, 1);
+    encoder->setBuffer(partialIndices.get(), 0, 2);
+    encoder->setBuffer(partialValid.get(), 0, 3);
+    encoder->setBytes(&p, sizeof(p), 4);
+    encoder->dispatchThreadgroups(MTL::Size(chunkCount, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(finalPipeline);
+    encoder->setBuffer(partialValues.get(), 0, 0);
+    encoder->setBuffer(partialIndices.get(), 0, 1);
+    encoder->setBuffer(partialValid.get(), 0, 2);
+    encoder->setBuffer(output.buffer, output.offset, 3);
+    encoder->setBuffer(locations.buffer, locations.offset, 4);
+    encoder->setBytes(&p, sizeof(p), 5);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->endEncoding();
+
+    auto valuesLifetime = std::shared_ptr<MTL::Buffer>(
+        partialValues.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto indicesLifetime = std::shared_ptr<MTL::Buffer>(
+        partialIndices.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto validLifetime = std::shared_ptr<MTL::Buffer>(
+        partialValid.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    partialValues->retain();
+    partialIndices->retain();
+    partialValid->retain();
+    commandBuffer->addCompletedHandler(
+        [values = std::move(valuesLifetime),
+         indices = std::move(indicesLifetime),
+         valid = std::move(validLifetime)](MTL::CommandBuffer*) {
+            static_cast<void>(values);
+            static_cast<void>(indices);
+            static_cast<void>(valid);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(),
+            "Metal all-indexed reduction dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 void launchMetalIReduce(BufferParam output, size_t outputBytes,

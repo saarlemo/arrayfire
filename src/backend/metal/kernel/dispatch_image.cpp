@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -213,9 +214,66 @@ void launchMetalDot(BufferParam output, const size_t outputBytes,
     params.rhsStride    = static_cast<uint64_t>(rhsStrides[0]);
     params.conjugateLhs = lhsOption == AF_MAT_CONJ;
     params.conjugateRhs = rhsOption == AF_MAT_CONJ;
-    launchTwoInputKernel(output, outputBytes, lhs, lhsBytes, rhs, rhsBytes,
-                         &params, sizeof(params), 1, dotFunctionName(type),
-                         "dot");
+    constexpr size_t chunkSize = 256;
+    const size_t length = static_cast<size_t>(params.length);
+    UNUSED(outputBytes);
+    UNUSED(lhsBytes);
+    UNUSED(rhsBytes);
+    const char* baseName = dotFunctionName(type);
+    if (!baseName)
+        AF_ERROR("Dot type is not supported by Metal", AF_ERR_NOT_SUPPORTED);
+    const std::string partialName = std::string(baseName) + "_partial";
+    const std::string finalName = std::string(baseName) + "_final";
+    auto* partialPipeline = metalPipeline(partialName.c_str());
+    auto* finalPipeline = metalPipeline(finalName.c_str());
+    const size_t chunkCount =
+        std::max<size_t>((length + chunkSize - 1) / chunkSize, 1);
+    if (chunkCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal dot dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    if (chunkCount > std::numeric_limits<size_t>::max() / sizeof(uint64_t))
+        AF_ERROR("Metal dot scratch size overflow", AF_ERR_SIZE);
+    auto partials = NS::TransferPtr(metalDevice()->newBuffer(
+        chunkCount * sizeof(uint64_t), MTL::ResourceStorageModePrivate));
+    if (!partials)
+        AF_ERROR("Could not allocate Metal dot scratch", AF_ERR_NO_MEM);
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(partialPipeline);
+    encoder->setBuffer(lhs.buffer, lhs.offset, 0);
+    encoder->setBuffer(rhs.buffer, rhs.offset, 1);
+    encoder->setBuffer(partials.get(), 0, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->dispatchThreadgroups(MTL::Size(chunkCount, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(finalPipeline);
+    encoder->setBuffer(partials.get(), 0, 0);
+    encoder->setBuffer(output.buffer, output.offset, 1);
+    encoder->setBytes(&params, sizeof(params), 2);
+    encoder->dispatchThreadgroups(MTL::Size(1, 1, 1),
+                                  MTL::Size(chunkSize, 1, 1));
+    encoder->endEncoding();
+
+    auto partialLifetime = std::shared_ptr<MTL::Buffer>(
+        partials.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    partials->retain();
+    commandBuffer->addCompletedHandler(
+        [lifetime = std::move(partialLifetime)](MTL::CommandBuffer*) {
+            static_cast<void>(lifetime);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal dot dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalBilateral(const af_dtype inputType,
