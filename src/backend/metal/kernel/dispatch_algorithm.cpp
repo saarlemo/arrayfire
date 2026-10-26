@@ -562,9 +562,123 @@ void launchMetalScan(BufferParam output, const size_t outputBytes,
     params.dimension = static_cast<uint32_t>(dimension);
     params.operation = operation;
     params.inclusive = inclusive;
-    launchSingleInputKernel(output, outputBytes, dims, input, inputBytes,
-                            &params, sizeof(params),
-                            scanFunctionName(inputType, outputType), "scan");
+
+    constexpr size_t tileLength = 4096;
+    constexpr size_t threadgroupSize = 256;
+    const size_t outputCount = static_cast<size_t>(dims.elements());
+    const size_t scanLength = static_cast<size_t>(dims[dimension]);
+    if (outputCount == 0) return;
+    UNUSED(inputBytes);
+
+    const char* baseName = scanFunctionName(inputType, outputType);
+    if (!baseName)
+        AF_ERROR("Scan type is not supported by Metal", AF_ERR_NOT_SUPPORTED);
+    const std::string tileName = std::string(baseName) + "_tile";
+    const std::string totalsName =
+        std::string(baseName) + "_totals_scan";
+    const std::string applyName = std::string(baseName) + "_apply";
+    auto* tilePipeline = metalPipeline(tileName.c_str());
+    auto* totalsPipeline = metalPipeline(totalsName.c_str());
+    auto* applyPipeline = metalPipeline(applyName.c_str());
+    if (scanLength >
+        std::numeric_limits<size_t>::max() - (tileLength - 1))
+        AF_ERROR("Metal scan tile count overflow", AF_ERR_SIZE);
+    const size_t tileCount = (scanLength + tileLength - 1) / tileLength;
+    constexpr size_t totalsPerBlock = 4096;
+    if (tileCount >
+        std::numeric_limits<size_t>::max() - (totalsPerBlock - 1))
+        AF_ERROR("Metal scan totals block count overflow", AF_ERR_SIZE);
+    const size_t blockCount =
+        (tileCount + totalsPerBlock - 1) / totalsPerBlock;
+    const size_t lineCount = outputCount / scanLength;
+    if (lineCount > std::numeric_limits<size_t>::max() / tileCount)
+        AF_ERROR("Metal scan scratch size overflow", AF_ERR_SIZE);
+    const size_t partialCount = lineCount * tileCount;
+    if (outputBytes == 0 || outputBytes % outputCount != 0)
+        AF_ERROR("Metal scan output size is invalid", AF_ERR_SIZE);
+    const size_t elementBytes = outputBytes / outputCount;
+    if (partialCount > std::numeric_limits<size_t>::max() / elementBytes)
+        AF_ERROR("Metal scan scratch size overflow", AF_ERR_SIZE);
+    if (lineCount > std::numeric_limits<size_t>::max() / blockCount)
+        AF_ERROR("Metal scan block scratch size overflow", AF_ERR_SIZE);
+    const size_t blockPartialCount = lineCount * blockCount;
+    if (blockPartialCount >
+        std::numeric_limits<size_t>::max() / elementBytes)
+        AF_ERROR("Metal scan block scratch size overflow", AF_ERR_SIZE);
+    if (tileCount > std::numeric_limits<uint32_t>::max() ||
+        blockCount > std::numeric_limits<uint32_t>::max() ||
+        lineCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal scan dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    const size_t partialBytes = partialCount * elementBytes;
+    const size_t blockPartialBytes = blockPartialCount * elementBytes;
+    auto tileTotals = NS::TransferPtr(metalDevice()->newBuffer(
+        partialBytes, MTL::ResourceStorageModePrivate));
+    auto tilePrefixes = NS::TransferPtr(metalDevice()->newBuffer(
+        partialBytes, MTL::ResourceStorageModePrivate));
+    auto blockTotals = NS::TransferPtr(metalDevice()->newBuffer(
+        blockPartialBytes, MTL::ResourceStorageModePrivate));
+    if (!tileTotals || !tilePrefixes || !blockTotals)
+        AF_ERROR("Could not allocate Metal scan scratch", AF_ERR_NO_MEM);
+    ScanTotalsParams totalsParams{tileCount, blockCount, operation};
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(tilePipeline);
+    encoder->setBuffer(input.buffer, input.offset, 0);
+    encoder->setBuffer(output.buffer, output.offset, 1);
+    encoder->setBuffer(tileTotals.get(), 0, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->dispatchThreadgroups(MTL::Size(tileCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(totalsPipeline);
+    encoder->setBuffer(tileTotals.get(), 0, 0);
+    encoder->setBuffer(tilePrefixes.get(), 0, 1);
+    encoder->setBuffer(blockTotals.get(), 0, 2);
+    encoder->setBytes(&totalsParams, sizeof(totalsParams), 3);
+    encoder->dispatchThreadgroups(MTL::Size(blockCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+    encoder->setComputePipelineState(applyPipeline);
+    encoder->setBuffer(tilePrefixes.get(), 0, 0);
+    encoder->setBuffer(blockTotals.get(), 0, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBytes(&params, sizeof(params), 3);
+    encoder->setBytes(&totalsParams, sizeof(totalsParams), 4);
+    encoder->dispatchThreadgroups(MTL::Size(tileCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->endEncoding();
+
+    auto totalsLifetime = std::shared_ptr<MTL::Buffer>(
+        tileTotals.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto prefixLifetime = std::shared_ptr<MTL::Buffer>(
+        tilePrefixes.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    auto blockLifetime = std::shared_ptr<MTL::Buffer>(
+        blockTotals.get(), [](MTL::Buffer* buffer) { buffer->release(); });
+    tileTotals->retain();
+    tilePrefixes->retain();
+    blockTotals->retain();
+    commandBuffer->addCompletedHandler(
+        [partials = std::move(totalsLifetime),
+         prefixes = std::move(prefixLifetime),
+         blocks = std::move(blockLifetime)](MTL::CommandBuffer*) {
+            static_cast<void>(partials);
+            static_cast<void>(prefixes);
+            static_cast<void>(blocks);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message =
+            metalErrorDescription(commandBuffer->error(),
+                                  "Metal scan dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalScanByKey(const af_dtype keyType,
@@ -590,10 +704,184 @@ void launchMetalScanByKey(BufferParam output, const size_t outputBytes,
     params.dimension = static_cast<uint32_t>(dimension);
     params.operation = operation;
     params.inclusive = inclusive;
-    launchTwoInputKernel(
-        output, outputBytes, keys, keyBytes, input, inputBytes, &params,
-        sizeof(params), static_cast<size_t>(dims.elements()),
-        scanByKeyFunctionName(keyType, valueType), "scan-by-key");
+
+    constexpr size_t tileLength = 4096;
+    constexpr size_t threadgroupSize = 256;
+    const size_t outputCount = static_cast<size_t>(dims.elements());
+    const size_t scanLength = static_cast<size_t>(dims[dimension]);
+    if (outputCount == 0) return;
+    UNUSED(outputBytes);
+
+    const char* functionName = scanByKeyFunctionName(keyType, valueType);
+    if (!functionName)
+        AF_ERROR("Scan-by-key type is not supported by Metal",
+                 AF_ERR_NOT_SUPPORTED);
+    const std::string tileName =
+        std::string(functionName) + "_tile_scan";
+    const std::string totalsName =
+        std::string(functionName) + "_totals_scan";
+    const std::string applyName =
+        std::string(functionName) + "_carry_apply";
+    auto* tilePipeline = metalPipeline(tileName.c_str());
+    auto* totalsPipeline = metalPipeline(totalsName.c_str());
+    auto* applyPipeline = metalPipeline(applyName.c_str());
+    if (scanLength >
+        std::numeric_limits<size_t>::max() - (tileLength - 1))
+        AF_ERROR("Metal scan-by-key tile count overflow", AF_ERR_SIZE);
+    const size_t tileCount = (scanLength + tileLength - 1) / tileLength;
+    constexpr size_t summariesPerBlock = 4096;
+    if (tileCount >
+        std::numeric_limits<size_t>::max() - (summariesPerBlock - 1))
+        AF_ERROR("Metal scan-by-key summary block count overflow", AF_ERR_SIZE);
+    const size_t blockCount =
+        (tileCount + summariesPerBlock - 1) / summariesPerBlock;
+    const size_t lineCount = outputCount / scanLength;
+    if (lineCount > std::numeric_limits<size_t>::max() / tileCount)
+        AF_ERROR("Metal scan-by-key scratch size overflow", AF_ERR_SIZE);
+    const size_t partialCount = lineCount * tileCount;
+    if (lineCount > std::numeric_limits<size_t>::max() / blockCount)
+        AF_ERROR("Metal scan-by-key block scratch size overflow", AF_ERR_SIZE);
+    const size_t blockPartialCount = lineCount * blockCount;
+    if (partialCount > std::numeric_limits<size_t>::max() / keyBytes ||
+        partialCount > std::numeric_limits<size_t>::max() / inputBytes ||
+        partialCount > std::numeric_limits<size_t>::max() /
+                           sizeof(uint32_t) ||
+        blockPartialCount >
+            std::numeric_limits<size_t>::max() / keyBytes ||
+        blockPartialCount >
+            std::numeric_limits<size_t>::max() / inputBytes ||
+        blockPartialCount >
+            std::numeric_limits<size_t>::max() / sizeof(uint32_t))
+        AF_ERROR("Metal scan-by-key scratch size overflow", AF_ERR_SIZE);
+    if (tileCount > std::numeric_limits<uint32_t>::max() ||
+        blockCount > std::numeric_limits<uint32_t>::max() ||
+        lineCount > std::numeric_limits<uint32_t>::max())
+        AF_ERROR("Metal scan-by-key dispatch exceeds the supported grid size",
+                 AF_ERR_SIZE);
+    const size_t keyScratchBytes = partialCount * keyBytes;
+    const size_t valueScratchBytes = partialCount * inputBytes;
+    const size_t metadataBytes = partialCount * sizeof(uint32_t);
+    const size_t blockKeyBytes = blockPartialCount * keyBytes;
+    const size_t blockValueBytes = blockPartialCount * inputBytes;
+    const size_t blockMetadataBytes = blockPartialCount * sizeof(uint32_t);
+    auto firstKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        keyScratchBytes, MTL::ResourceStorageModePrivate));
+    auto lastKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        keyScratchBytes, MTL::ResourceStorageModePrivate));
+    auto trailingValues = NS::TransferPtr(metalDevice()->newBuffer(
+        valueScratchBytes, MTL::ResourceStorageModePrivate));
+    auto leadingLengths = NS::TransferPtr(metalDevice()->newBuffer(
+        metadataBytes, MTL::ResourceStorageModePrivate));
+    auto summaryFlags = NS::TransferPtr(metalDevice()->newBuffer(
+        metadataBytes, MTL::ResourceStorageModePrivate));
+    auto prefixFirstKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        keyScratchBytes, MTL::ResourceStorageModePrivate));
+    auto prefixLastKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        keyScratchBytes, MTL::ResourceStorageModePrivate));
+    auto prefixTrailingValues = NS::TransferPtr(metalDevice()->newBuffer(
+        valueScratchBytes, MTL::ResourceStorageModePrivate));
+    auto prefixLeadingLengths = NS::TransferPtr(metalDevice()->newBuffer(
+        metadataBytes, MTL::ResourceStorageModePrivate));
+    auto prefixFlags = NS::TransferPtr(metalDevice()->newBuffer(
+        metadataBytes, MTL::ResourceStorageModePrivate));
+    auto blockFirstKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        blockKeyBytes, MTL::ResourceStorageModePrivate));
+    auto blockLastKeys = NS::TransferPtr(metalDevice()->newBuffer(
+        blockKeyBytes, MTL::ResourceStorageModePrivate));
+    auto blockTrailingValues = NS::TransferPtr(metalDevice()->newBuffer(
+        blockValueBytes, MTL::ResourceStorageModePrivate));
+    auto blockLeadingLengths = NS::TransferPtr(metalDevice()->newBuffer(
+        blockMetadataBytes, MTL::ResourceStorageModePrivate));
+    auto blockFlags = NS::TransferPtr(metalDevice()->newBuffer(
+        blockMetadataBytes, MTL::ResourceStorageModePrivate));
+    if (!firstKeys || !lastKeys || !trailingValues || !leadingLengths ||
+        !summaryFlags || !prefixFirstKeys || !prefixLastKeys ||
+        !prefixTrailingValues || !prefixLeadingLengths || !prefixFlags ||
+        !blockFirstKeys || !blockLastKeys || !blockTrailingValues ||
+        !blockLeadingLengths || !blockFlags)
+        AF_ERROR("Could not allocate Metal scan-by-key scratch",
+                 AF_ERR_NO_MEM);
+    ScanByKeyTotalsParams totalsParams{tileCount, blockCount, operation};
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder)
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    encoder->setComputePipelineState(tilePipeline);
+    encoder->setBuffer(keys.buffer, keys.offset, 0);
+    encoder->setBuffer(input.buffer, input.offset, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBuffer(firstKeys.get(), 0, 3);
+    encoder->setBuffer(lastKeys.get(), 0, 4);
+    encoder->setBuffer(trailingValues.get(), 0, 5);
+    encoder->setBuffer(leadingLengths.get(), 0, 6);
+    encoder->setBuffer(summaryFlags.get(), 0, 7);
+    encoder->setBytes(&params, sizeof(params), 8);
+    encoder->dispatchThreadgroups(MTL::Size(tileCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+
+    std::array<MTL::Buffer*, 5> originalSummaries{
+        firstKeys.get(), lastKeys.get(), trailingValues.get(),
+        leadingLengths.get(), summaryFlags.get()};
+    std::array<MTL::Buffer*, 5> prefixSummaries{
+        prefixFirstKeys.get(), prefixLastKeys.get(), prefixTrailingValues.get(),
+        prefixLeadingLengths.get(), prefixFlags.get()};
+    std::array<MTL::Buffer*, 5> blockSummaries{
+        blockFirstKeys.get(), blockLastKeys.get(), blockTrailingValues.get(),
+        blockLeadingLengths.get(), blockFlags.get()};
+
+    encoder->setComputePipelineState(totalsPipeline);
+    for (size_t i = 0; i < 5; ++i) {
+        encoder->setBuffer(originalSummaries[i], 0, i);
+        encoder->setBuffer(prefixSummaries[i], 0, i + 5);
+        encoder->setBuffer(blockSummaries[i], 0, i + 10);
+    }
+    encoder->setBytes(&totalsParams, sizeof(totalsParams), 15);
+    encoder->dispatchThreadgroups(MTL::Size(blockCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->memoryBarrier(MTL::BarrierScopeBuffers);
+
+    encoder->setComputePipelineState(applyPipeline);
+    encoder->setBuffer(output.buffer, output.offset, 0);
+    for (size_t i = 0; i < 5; ++i) {
+        encoder->setBuffer(originalSummaries[i], 0, i + 1);
+        encoder->setBuffer(prefixSummaries[i], 0, i + 6);
+        encoder->setBuffer(blockSummaries[i], 0, i + 11);
+    }
+    encoder->setBytes(&totalsParams, sizeof(totalsParams), 16);
+    encoder->setBytes(&params, sizeof(params), 17);
+    encoder->dispatchThreadgroups(MTL::Size(tileCount, lineCount, 1),
+                                  MTL::Size(threadgroupSize, 1, 1));
+    encoder->endEncoding();
+
+    std::array<MTL::Buffer*, 15> scratchBuffers{
+        firstKeys.get(),          lastKeys.get(),          trailingValues.get(),
+        leadingLengths.get(),     summaryFlags.get(),      prefixFirstKeys.get(),
+        prefixLastKeys.get(),     prefixTrailingValues.get(),
+        prefixLeadingLengths.get(), prefixFlags.get(),     blockFirstKeys.get(),
+        blockLastKeys.get(),      blockTrailingValues.get(),
+        blockLeadingLengths.get(), blockFlags.get()};
+    std::array<std::shared_ptr<MTL::Buffer>, 15> scratchLifetimes;
+    for (size_t i = 0; i < scratchBuffers.size(); ++i) {
+        scratchBuffers[i]->retain();
+        scratchLifetimes[i] = std::shared_ptr<MTL::Buffer>(
+            scratchBuffers[i], [](MTL::Buffer* buffer) { buffer->release(); });
+    }
+    commandBuffer->addCompletedHandler(
+        [lifetimes = std::move(scratchLifetimes)](MTL::CommandBuffer*) {
+            static_cast<void>(lifetimes);
+        });
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message =
+            metalErrorDescription(commandBuffer->error(),
+                                  "Metal scan-by-key dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalMean(const af_dtype inputType,

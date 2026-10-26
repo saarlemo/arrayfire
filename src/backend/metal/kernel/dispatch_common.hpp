@@ -311,6 +311,12 @@ struct ScanParams {
     uint32_t inclusive;
 };
 
+struct ScanTotalsParams {
+    uint64_t tileCount;
+    uint64_t blockCount;
+    uint32_t operation;
+};
+
 struct ScanByKeyParams {
     uint64_t dims[4];
     int64_t outputStrides[4];
@@ -319,6 +325,12 @@ struct ScanByKeyParams {
     uint32_t dimension;
     uint32_t operation;
     uint32_t inclusive;
+};
+
+struct ScanByKeyTotalsParams {
+    uint64_t tileCount;
+    uint64_t blockCount;
+    uint32_t operation;
 };
 
 struct MeanParams {
