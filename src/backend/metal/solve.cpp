@@ -13,7 +13,6 @@
 
 #if defined(WITH_LINEAR_ALGEBRA)
 #include <copy.hpp>
-#include <kernel/solve.hpp>
 #include <lapack_helper.hpp>
 #include <platform.hpp>
 #include <queue.hpp>
@@ -37,10 +36,24 @@ using gels_work_func_def = int (*)(ORDER_TYPE, char, int, int, int, T *, int,
                                    T *, int, T *, int);
 
 template<typename T>
+using getrs_func_def = int (*)(ORDER_TYPE, char, int, int, const T *, int,
+                               const int *, T *, int);
+
+template<typename T>
+using trtrs_func_def = int (*)(ORDER_TYPE, char, char, char, int, int,
+                               const T *, int, T *, int);
+
+template<typename T>
 gesv_func_def<T> gesv_func();
 
 template<typename T>
 gels_work_func_def<T> gels_work_func();
+
+template<typename T>
+getrs_func_def<T> getrs_func();
+
+template<typename T>
+trtrs_func_def<T> trtrs_func();
 
 #define SOLVE_LAPACK_FUNC(TYPE, PREFIX)                                      \
     template<>                                                               \
@@ -50,6 +63,14 @@ gels_work_func_def<T> gels_work_func();
     template<>                                                               \
     gels_work_func_def<TYPE> gels_work_func<TYPE>() {                        \
         return &LAPACK_NAME(PREFIX##gels_work);                              \
+    }                                                                        \
+    template<>                                                               \
+    getrs_func_def<TYPE> getrs_func<TYPE>() {                                \
+        return &LAPACK_NAME(PREFIX##getrs);                                  \
+    }                                                                        \
+    template<>                                                               \
+    trtrs_func_def<TYPE> trtrs_func<TYPE>() {                                \
+        return &LAPACK_NAME(PREFIX##trtrs);                                  \
     }
 
 SOLVE_LAPACK_FUNC(float, s)
@@ -70,23 +91,57 @@ int lapackWorkSize(const std::complex<T> value) {
 }
 
 template<typename T>
-void checkSolveType() {
-    const af_dtype type = static_cast<af_dtype>(af::dtype_traits<T>::af_type);
-    if (!kernel::supportsMetalSolve(type)) {
-        AF_ERROR("Input type is not supported by the Metal solve backend",
-                 AF_ERR_NOT_SUPPORTED);
-    }
-}
-
-template<typename T>
 Array<T> triangleSolve(const Array<T> &a, const Array<T> &b,
                        const af_mat_prop options) {
-    checkSolveType<T>();
-    Array<T> out = copyArray<T>(b);
-    getQueue().enqueueNative(kernel::solveTriangularMetal<T>, a, out,
-                             bool(options & AF_MAT_UPPER),
-                             bool(options & AF_MAT_DIAG_UNIT));
-    return out;
+    const af::dim4 aDims = a.dims();
+    const af::dim4 bDims = b.dims();
+    const int n = static_cast<int>(aDims[0]);
+    const int nrhs = static_cast<int>(bDims[1]);
+    const int batchZ = static_cast<int>(bDims[2]);
+    const int batchW = static_cast<int>(bDims[3]);
+
+    if (n == 0 || nrhs == 0) { return createEmptyArray<T>(bDims); }
+
+    Array<T> factors = copyToLapackArray(a);
+    Array<T> output = copyToLapackArray(b);
+    factors.eval();
+    output.eval();
+    getQueue().sync();
+
+    const T *factorData = factors.getHostPtr();
+    T *rhsData = output.getHostPtr();
+    if (!factorData || !rhsData) {
+        AF_ERROR("Accelerate triangular solve requires CPU-visible Metal storage",
+                 AF_ERR_RUNTIME);
+    }
+
+    const char uplo = options & AF_MAT_UPPER ? 'U' : 'L';
+    const char diag = options & AF_MAT_DIAG_UNIT ? 'U' : 'N';
+    const int lda = static_cast<int>(factors.strides()[1]);
+    const int ldb = static_cast<int>(output.strides()[1]);
+    const size_t factorBatchStrideZ = factors.strides()[2];
+    const size_t factorBatchStrideW = factors.strides()[3];
+    const size_t rhsBatchStrideZ = output.strides()[2];
+    const size_t rhsBatchStrideW = output.strides()[3];
+
+    for (int w = 0; w < batchW; ++w) {
+        for (int z = 0; z < batchZ; ++z) {
+            const T *batchFactors = factorData + factorBatchStrideZ * z +
+                                    factorBatchStrideW * w;
+            T *batchRhs = rhsData + rhsBatchStrideZ * z + rhsBatchStrideW * w;
+            const int info = trtrs_func<T>()(
+                AF_LAPACK_COL_MAJOR, uplo, 'N', diag, n, nrhs, batchFactors,
+                lda, batchRhs, ldb);
+            if (info != 0) {
+                const std::string message =
+                    "Accelerate LAPACK trtrs failed with info=" +
+                    std::to_string(info) + " at batch (" +
+                    std::to_string(z) + ", " + std::to_string(w) + ")";
+                AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+            }
+        }
+    }
+    return output;
 }
 
 template<typename T>
@@ -181,10 +236,37 @@ template<typename T>
 Array<T> solveLU(const Array<T> &A, const Array<int> &pivot, const Array<T> &b,
                  const af_mat_prop options) {
     UNUSED(options);
-    checkSolveType<T>();
-    Array<T> out = copyArray<T>(b);
-    getQueue().enqueueNative(kernel::solveLUMetal<T>, A, pivot, out);
-    return out;
+    const int n = static_cast<int>(A.dims()[0]);
+    const int nrhs = static_cast<int>(b.dims()[1]);
+    if (n == 0 || nrhs == 0) { return createEmptyArray<T>(b.dims()); }
+
+    Array<T> factors = copyToLapackArray(A);
+    Array<int> pivots = copyToLapackArray(pivot);
+    Array<T> output = copyToLapackArray(b);
+    factors.eval();
+    pivots.eval();
+    output.eval();
+    getQueue().sync();
+
+    const T *factorData = factors.getHostPtr();
+    const int *pivotData = pivots.getHostPtr();
+    T *rhsData = output.getHostPtr();
+    if (!factorData || !pivotData || !rhsData) {
+        AF_ERROR("Accelerate LU solve requires CPU-visible Metal storage",
+                 AF_ERR_RUNTIME);
+    }
+
+    const int info = getrs_func<T>()(
+        AF_LAPACK_COL_MAJOR, 'N', n, nrhs, factorData,
+        static_cast<int>(factors.strides()[1]), pivotData, rhsData,
+        static_cast<int>(output.strides()[1]));
+    if (info != 0) {
+        const std::string message =
+            "Accelerate LAPACK getrs failed with info=" +
+            std::to_string(info);
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
+    return output;
 }
 
 template<typename T>

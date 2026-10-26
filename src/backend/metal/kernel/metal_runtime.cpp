@@ -41,7 +41,6 @@
 #include <metal_kernel_headers/join.hpp>
 #include <metal_kernel_headers/lookup.hpp>
 #include <metal_kernel_headers/lu.hpp>
-#include <metal_kernel_headers/solve.hpp>
 #include <metal_kernel_headers/match_template.hpp>
 #include <metal_kernel_headers/mean.hpp>
 #include <metal_kernel_headers/meanshift.hpp>
@@ -125,7 +124,6 @@ const std::string computeSourceStorage = [] {
     append(join_metal_src);
     append(lookup_metal_src);
     append(lu_metal_src);
-    append(solve_metal_src);
     append(match_template_metal_src);
     append(moments_metal_src);
     append(morph_metal_src);

@@ -203,20 +203,6 @@ struct PivotParams {
     uint64_t outputCount, pivotCount;
 };
 
-// Parameters shared by the native Metal triangular and LU solve kernels.
-struct SolveParams {
-    uint64_t rows;
-    uint64_t columns;
-    uint64_t rhsColumns;
-    uint64_t aStrides[4];
-    uint64_t bStrides[4];
-    uint64_t pivotStrides[4];
-    uint32_t batch;
-    uint32_t batchZ;
-    uint32_t upper;
-    uint32_t unit;
-};
-
 struct SparseMatmulParams {
     uint64_t sourceRows;
     uint64_t sourceColumns;

@@ -75,7 +75,6 @@ set(metal_kernel_src
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/join.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/lookup.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/lu.metal
-  ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/solve.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/match_template.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/moments.metal
   ${CMAKE_CURRENT_SOURCE_DIR}/kernel/metal/morph.metal
