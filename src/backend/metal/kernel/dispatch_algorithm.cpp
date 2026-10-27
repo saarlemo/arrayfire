@@ -169,10 +169,53 @@ void launchMetalGemm(
     p.alphaImag      = alphaImag;
     p.betaReal       = betaReal;
     p.betaImag       = betaImag;
-    launchTwoInputKernel(output, outputBytes, lhs, lhsBytes, rhs, rhsBytes,
-                         &p, sizeof(p),
-                         static_cast<size_t>(outputDims.elements()),
-                         gemmFunctionName(type), "GEMM");
+    if (outputDims.elements() == 0) return;
+    UNUSED(outputBytes);
+    UNUSED(lhsBytes);
+    UNUSED(rhsBytes);
+    if (!output.buffer || !lhs.buffer || !rhs.buffer) {
+        AF_ERROR("Could not allocate Metal GEMM buffers", AF_ERR_NO_MEM);
+    }
+
+    auto commandBuffer =
+        NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder) {
+        AF_ERROR("Could not create a Metal GEMM command encoder",
+                 AF_ERR_RUNTIME);
+    }
+
+    constexpr NS::UInteger tileM = 16;
+    constexpr NS::UInteger tileN = 16;
+    constexpr size_t tileElements = tileM * tileN;
+    const size_t elementBytes = type == c32 ? 2 * sizeof(float) : sizeof(float);
+    auto* pipeline = metalPipeline(gemmFunctionName(type));
+    encoder->setComputePipelineState(pipeline);
+    encoder->setBuffer(lhs.buffer, lhs.offset, 0);
+    encoder->setBuffer(rhs.buffer, rhs.offset, 1);
+    encoder->setBuffer(output.buffer, output.offset, 2);
+    encoder->setBytes(&p, sizeof(p), 3);
+    encoder->setThreadgroupMemoryLength(tileElements * elementBytes, 0);
+    encoder->setThreadgroupMemoryLength(tileElements * elementBytes, 1);
+    const NS::UInteger groupsX =
+        static_cast<NS::UInteger>(p.m / tileM + (p.m % tileM != 0));
+    const NS::UInteger groupsY =
+        static_cast<NS::UInteger>(p.n / tileN + (p.n % tileN != 0));
+    const NS::UInteger groupsZ =
+        static_cast<NS::UInteger>(outputDims[2]) *
+        static_cast<NS::UInteger>(outputDims[3]);
+    encoder->dispatchThreadgroups(MTL::Size(groupsX, groupsY, groupsZ),
+                                  MTL::Size(tileM, tileN, 1));
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message =
+            metalErrorDescription(commandBuffer->error(),
+                                  "Metal GEMM dispatch failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
 }
 
 bool supportsMetalIndex(const af_dtype type) noexcept {
