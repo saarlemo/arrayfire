@@ -35,6 +35,10 @@ namespace metal {
 namespace kernel {
 void siftSubtractMetal(Array<float>& output, const Array<float>& first,
                        const Array<float>& second);
+void siftExtremaFlagsMetal(Array<unsigned char>& output,
+                           const Array<float>& previous,
+                           const Array<float>& center,
+                           const Array<float>& next, const float threshold);
 void siftDescriptorMetal(Array<float>& output, const Array<float>& features,
                          const Array<unsigned>& outputIndices,
                          const Array<float>& image, const unsigned count,
@@ -171,62 +175,6 @@ void sub(Array<T>& out, const Array<T>& in1, const Array<T>& in2) {
 #define CPTR(Y, X) (center_ptr[(Y) * idims[0] + (X)])
 #define PPTR(Y, X) (prev_ptr[(Y) * idims[0] + (X)])
 #define NPTR(Y, X) (next_ptr[(Y) * idims[0] + (X)])
-
-// Determines whether a pixel is a scale-space extremum by comparing it to its
-// 3x3x3 pixel neighborhood.
-template<typename T>
-void detectExtrema(float* x_out, float* y_out, unsigned* layer_out,
-                   unsigned* counter, const Array<T>& prev,
-                   const Array<T>& center, const Array<T>& next,
-                   const unsigned layer, const unsigned max_feat,
-                   const float threshold) {
-    const af::dim4 idims = center.dims();
-    const T* prev_ptr    = prev.getHostPtr();
-    const T* center_ptr  = center.getHostPtr();
-    const T* next_ptr    = next.getHostPtr();
-
-    for (int y = ImgBorder; y < idims[1] - ImgBorder; y++) {
-        for (int x = ImgBorder; x < idims[0] - ImgBorder; x++) {
-            float p = center_ptr[y * idims[0] + x];
-
-            // Find extrema
-            if (abs((float)p) > threshold &&
-                ((p > 0 && p > CPTR(y - 1, x - 1) && p > CPTR(y - 1, x) &&
-                  p > CPTR(y - 1, x + 1) && p > CPTR(y, x - 1) &&
-                  p > CPTR(y, x + 1) && p > CPTR(y + 1, x - 1) &&
-                  p > CPTR(y + 1, x) && p > CPTR(y + 1, x + 1) &&
-                  p > PPTR(y - 1, x - 1) && p > PPTR(y - 1, x) &&
-                  p > PPTR(y - 1, x + 1) && p > PPTR(y, x - 1) &&
-                  p > PPTR(y, x) && p > PPTR(y, x + 1) &&
-                  p > PPTR(y + 1, x - 1) && p > PPTR(y + 1, x) &&
-                  p > PPTR(y + 1, x + 1) && p > NPTR(y - 1, x - 1) &&
-                  p > NPTR(y - 1, x) && p > NPTR(y - 1, x + 1) &&
-                  p > NPTR(y, x - 1) && p > NPTR(y, x) && p > NPTR(y, x + 1) &&
-                  p > NPTR(y + 1, x - 1) && p > NPTR(y + 1, x) &&
-                  p > NPTR(y + 1, x + 1)) ||
-                 (p < 0 && p < CPTR(y - 1, x - 1) && p < CPTR(y - 1, x) &&
-                  p < CPTR(y - 1, x + 1) && p < CPTR(y, x - 1) &&
-                  p < CPTR(y, x + 1) && p < CPTR(y + 1, x - 1) &&
-                  p < CPTR(y + 1, x) && p < CPTR(y + 1, x + 1) &&
-                  p < PPTR(y - 1, x - 1) && p < PPTR(y - 1, x) &&
-                  p < PPTR(y - 1, x + 1) && p < PPTR(y, x - 1) &&
-                  p < PPTR(y, x) && p < PPTR(y, x + 1) &&
-                  p < PPTR(y + 1, x - 1) && p < PPTR(y + 1, x) &&
-                  p < PPTR(y + 1, x + 1) && p < NPTR(y - 1, x - 1) &&
-                  p < NPTR(y - 1, x) && p < NPTR(y - 1, x + 1) &&
-                  p < NPTR(y, x - 1) && p < NPTR(y, x) && p < NPTR(y, x + 1) &&
-                  p < NPTR(y + 1, x - 1) && p < NPTR(y + 1, x) &&
-                  p < NPTR(y + 1, x + 1)))) {
-                if (*counter < max_feat) {
-                    x_out[*counter]     = (float)y;
-                    y_out[*counter]     = (float)x;
-                    layer_out[*counter] = layer;
-                    (*counter)++;
-                }
-            }
-        }
-    }
-}
 
 // Interpolates a scale-space extremum's location and scale to subpixel
 // accuracy to form an image feature. Rejects features with low contrast.
@@ -823,6 +771,36 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
     // SIFT postprocessing reads these shared Metal buffers on the CPU.
     getQueue().sync();
 
+    vector<vector<Array<unsigned char>>> extrema_masks(n_octaves);
+    if constexpr (std::is_same<T, float>::value) {
+        const float extrema_threshold = 0.5f * contrast_thr / n_layers;
+        for (unsigned octave = 0; octave < n_octaves; octave++) {
+            const af::dim4 dims =
+                dog_pyr[octave * (n_layers + 2)].dims();
+            if (dims[0] - 2 * ImgBorder < 1 ||
+                dims[1] - 2 * ImgBorder < 1) {
+                continue;
+            }
+
+            for (unsigned layer = 1; layer <= n_layers; layer++) {
+                const unsigned previous =
+                    octave * (n_layers + 2) + layer - 1;
+                const unsigned center =
+                    octave * (n_layers + 2) + layer;
+                const unsigned next =
+                    octave * (n_layers + 2) + layer + 1;
+                Array<unsigned char> flags = createEmptyArray<unsigned char>(dims);
+                kernel::siftExtremaFlagsMetal(
+                    flags, dog_pyr[previous], dog_pyr[center], dog_pyr[next],
+                    extrema_threshold);
+                extrema_masks[octave].push_back(std::move(flags));
+            }
+        }
+        // All layer masks are read back together, after every octave/layer
+        // kernel has been queued and its backing buffer has remained alive.
+        getQueue().sync();
+    }
+
     vector<buffer_ptr> x_pyr(n_octaves);
     vector<buffer_ptr> y_pyr(n_octaves);
     vector<buffer_ptr> response_pyr(n_octaves);
@@ -856,21 +834,35 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
         auto extrema_y        = memAlloc<float>(max_feat);
         auto extrema_layer    = memAlloc<unsigned>(max_feat);
         unsigned extrema_feat = 0;
+        float* extrema_x_data = bufferData<float>(extrema_x.get());
+        float* extrema_y_data = bufferData<float>(extrema_y.get());
+        unsigned* extrema_layer_data =
+            bufferData<unsigned>(extrema_layer.get());
 
-        for (unsigned j = 1; j <= n_layers; j++) {
-            unsigned prev   = i * (n_layers + 2) + j - 1;
-            unsigned center = i * (n_layers + 2) + j;
-            unsigned next   = i * (n_layers + 2) + j + 1;
-
-            unsigned layer = j;
-
-            float extrema_thr = 0.5f * contrast_thr / n_layers;
-            detectExtrema<T>(
-                bufferData<float>(extrema_x.get()),
-                bufferData<float>(extrema_y.get()),
-                bufferData<unsigned>(extrema_layer.get()), &extrema_feat,
-                dog_pyr[prev], dog_pyr[center], dog_pyr[next], layer, max_feat,
-                extrema_thr);
+        if constexpr (std::is_same<T, float>::value) {
+            for (unsigned j = 1; j <= n_layers && extrema_feat < max_feat; j++) {
+                const unsigned char* flags =
+                    extrema_masks[i][j - 1].getHostPtr();
+                for (int y = ImgBorder;
+                     y < ddims[1] - ImgBorder && extrema_feat < max_feat;
+                     y++) {
+                    for (int x = ImgBorder;
+                         x < ddims[0] - ImgBorder && extrema_feat < max_feat;
+                         x++) {
+                        const size_t index = size_t(y) * size_t(ddims[0]) +
+                                             size_t(x);
+                        if (flags[index]) {
+                            extrema_x_data[extrema_feat] = float(y);
+                            extrema_y_data[extrema_feat] = float(x);
+                            extrema_layer_data[extrema_feat] = j;
+                            extrema_feat++;
+                        }
+                    }
+                }
+            }
+        } else {
+            AF_ERROR("Metal SIFT supports only single precision",
+                     AF_ERR_NO_DBL);
         }
 
         extrema_feat = min(extrema_feat, max_feat);

@@ -3060,6 +3060,30 @@ void siftSubtractMetal(Array<float>& output, const Array<float>& first,
                          "SIFT pyramid subtraction");
 }
 
+void siftExtremaFlagsMetal(Array<unsigned char>& output,
+                           const Array<float>& previous,
+                           const Array<float>& center,
+                           const Array<float>& next,
+                           const float threshold) {
+    const size_t elements = size_t(center.elements());
+    if (elements == 0) return;
+
+    struct SiftExtremaParams {
+        uint64_t elements;
+        uint64_t width;
+        uint64_t height;
+        float threshold;
+    } p{uint64_t(elements), uint64_t(center.dims()[0]),
+        uint64_t(center.dims()[1]), threshold};
+
+    launchThreeInputKernel(
+        output.bufferParam(), elements * sizeof(unsigned char),
+        previous.bufferParam(), elements * sizeof(float), center.bufferParam(),
+        elements * sizeof(float), next.bufferParam(), elements * sizeof(float),
+        &p, sizeof(p), elements, "sift_extrema_flags_float",
+        "SIFT extrema detection");
+}
+
 void siftDescriptorMetal(Array<float>& output, const Array<float>& features,
                          const Array<unsigned>& outputIndices,
                          const Array<float>& image, const unsigned count,

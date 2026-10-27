@@ -19,6 +19,13 @@ struct SiftDescriptorParams {
     float scale;
 };
 
+struct SiftExtremaParams {
+    ulong elements;
+    ulong width;
+    ulong height;
+    float threshold;
+};
+
 static void siftAtomicAddFloat(threadgroup atomic_uint* destination,
                                const float value) {
     uint expected = atomic_load_explicit(destination, memory_order_relaxed);
@@ -39,6 +46,54 @@ kernel void sift_subtract_float(const device float* first [[buffer(0)]],
                                 constant SiftParams& p [[buffer(3)]],
                                 uint gid [[thread_position_in_grid]]) {
     if (gid < p.elements) output[gid] = first[gid] - second[gid];
+}
+
+// Emits one candidate flag per pixel. The host compacts these flags in the
+// original layer/y/x order so the per-octave feature cap remains deterministic.
+kernel void sift_extrema_flags_float(
+    const device float* previous [[buffer(0)]],
+    const device float* center [[buffer(1)]],
+    const device float* next [[buffer(2)]],
+    device uchar* flags [[buffer(3)]],
+    constant SiftExtremaParams& p [[buffer(4)]],
+    uint gid [[thread_position_in_grid]]) {
+    const ulong index = ulong(gid);
+    if (index >= p.elements) return;
+
+    const ulong x = index % p.width;
+    const ulong y = index / p.width;
+    constexpr ulong border = 5;
+    if (x < border || x >= p.width - border || y < border ||
+        y >= p.height - border) {
+        flags[index] = 0;
+        return;
+    }
+
+    const float value = center[index];
+    if (!(abs(value) > p.threshold)) {
+        flags[index] = 0;
+        return;
+    }
+
+    bool isMaximum = value > 0.f;
+    bool isMinimum = value < 0.f;
+    for (int dz = -1; dz <= 1; dz++) {
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (dx == 0 && dy == 0 && dz == 0) continue;
+                const long neighborX = long(x) + dx;
+                const long neighborY = long(y) + dy;
+                const ulong neighbor = ulong(neighborY) * p.width +
+                                       ulong(neighborX);
+                const float other =
+                    dz < 0 ? previous[neighbor]
+                           : (dz > 0 ? next[neighbor] : center[neighbor]);
+                isMaximum = isMaximum && value > other;
+                isMinimum = isMinimum && value < other;
+            }
+        }
+    }
+    flags[index] = (isMaximum || isMinimum) ? 1 : 0;
 }
 
 // Each threadgroup computes one feature descriptor. Threads cooperatively
