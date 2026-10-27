@@ -35,6 +35,10 @@ namespace metal {
 namespace kernel {
 void siftSubtractMetal(Array<float>& output, const Array<float>& first,
                        const Array<float>& second);
+void siftDescriptorMetal(Array<float>& output, const Array<float>& features,
+                         const Array<unsigned>& outputIndices,
+                         const Array<float>& image, const unsigned count,
+                         const float scale);
 }
 
 static const float PI_VAL = 3.14159265358979323846f;
@@ -121,7 +125,7 @@ Array<T> gauss_filter(float sigma) {
     unsigned gauss_len = std::min((unsigned)round(sigma * 6 + 1) | 1, 31u);
 
     Array<T> filter = createEmptyArray<T>(gauss_len);
-    gaussian1D((T*)getDevicePtr(filter), gauss_len, sigma);
+    gaussian1D(filter.getHostPtr(), gauss_len, sigma);
 
     return filter;
 }
@@ -508,112 +512,47 @@ void normalizeDesc(float* desc, const int histlen) {
     for (int i = 0; i < histlen; i++) { desc[i] *= len_inv; }
 }
 
-// Computes feature descriptors for features in an array.  Based on Section 6
-// of Lowe's paper.
-template<typename T>
-void computeDescriptor(float* desc_out, const unsigned desc_len,
-                       const float* x_in, const float* y_in,
-                       const unsigned* layer_in, const float* response_in,
-                       const float* size_in, const float* ori_in,
-                       const unsigned total_feat,
-                       const std::vector<Array<T>>& gauss_pyr, const int d,
-                       const int n, const float scale, const unsigned octave,
-                       const unsigned n_layers) {
-    UNUSED(response_in);
-    float desc[128];
-
+// Runs the standard float SIFT descriptor on Metal. Features are packed by
+// Gaussian layer so each dispatch reads one image buffer, while outputIndices
+// keeps each descriptor in its original feature slot.
+void computeDescriptorMetal(
+    Array<float>& desc_out, const float* x_in, const float* y_in,
+    const unsigned* layer_in, const float* size_in, const float* ori_in,
+    const unsigned total_feat, const std::vector<Array<float>>& gauss_pyr,
+    const float scale, const unsigned octave, const unsigned n_layers,
+    std::vector<Array<float>>& featureDataLifetime,
+    std::vector<Array<unsigned>>& featureIndexLifetime) {
+    std::vector<std::vector<unsigned>> featuresByLayer(n_layers + 3);
     for (unsigned f = 0; f < total_feat; f++) {
         const unsigned layer = layer_in[f];
-        float ori            = (360.f - ori_in[f]) * PI_VAL / 180.f;
-        ori                  = (ori > PI_VAL) ? ori - PI_VAL * 2 : ori;
-        const float size     = size_in[f];
-        const int fx         = round(x_in[f] * scale);
-        const int fy         = round(y_in[f] * scale);
+        if (layer < featuresByLayer.size()) featuresByLayer[layer].push_back(f);
+    }
 
-        // Points img to correct Gaussian pyramid layer
-        Array<T> img     = gauss_pyr[octave * (n_layers + 3) + layer];
-        const T* img_ptr = img.getHostPtr();
-        af::dim4 idims   = img.dims();
+    for (unsigned layer = 0; layer < featuresByLayer.size(); layer++) {
+        const auto& indices = featuresByLayer[layer];
+        if (indices.empty()) continue;
 
-        float cos_t        = cos(ori);
-        float sin_t        = sin(ori);
-        float bins_per_rad = n / (PI_VAL * 2.f);
-        float exp_denom    = d * d * 0.5f;
-        float hist_width   = DescrSclFctr * size * scale * 0.5f;
-        int radius         = hist_width * sqrt(2.f) * (d + 1.f) * 0.5f + 0.5f;
-
-        int len = radius * 2 + 1;
-
-        for (int i = 0; i < (int)desc_len; i++) desc[i] = 0.f;
-
-        // Calculate orientation histogram
-        for (int l = 0; l < len * len; l++) {
-            int i = l / len - radius;
-            int j = l % len - radius;
-
-            int y = fy + i;
-            int x = fx + j;
-
-            float x_rot = (j * cos_t - i * sin_t) / hist_width;
-            float y_rot = (j * sin_t + i * cos_t) / hist_width;
-            float xbin  = x_rot + d / 2 - 0.5f;
-            float ybin  = y_rot + d / 2 - 0.5f;
-
-            if (ybin > -1.0f && ybin < d && xbin > -1.0f && xbin < d && y > 0 &&
-                y < idims[0] - 1 && x > 0 && x < idims[1] - 1) {
-                float dx = (float)(IPTR(x + 1, y) - IPTR(x - 1, y));
-                float dy = (float)(IPTR(x, y - 1) - IPTR(x, y + 1));
-
-                float grad_mag = sqrt(dx * dx + dy * dy);
-                float grad_ori = atan2(dy, dx) - ori;
-                while (grad_ori < 0.0f) grad_ori += PI_VAL * 2;
-                while (grad_ori >= PI_VAL * 2) grad_ori -= PI_VAL * 2;
-
-                float w    = exp(-(x_rot * x_rot + y_rot * y_rot) / exp_denom);
-                float obin = grad_ori * bins_per_rad;
-                float mag  = grad_mag * w;
-
-                int x0 = floor(xbin);
-                int y0 = floor(ybin);
-                int o0 = floor(obin);
-                xbin -= x0;
-                ybin -= y0;
-                obin -= o0;
-
-                for (int yl = 0; yl <= 1; yl++) {
-                    int yb = y0 + yl;
-                    if (yb >= 0 && yb < d) {
-                        float v_y = mag * ((yl == 0) ? 1.0f - ybin : ybin);
-                        for (int xl = 0; xl <= 1; xl++) {
-                            int xb = x0 + xl;
-                            if (xb >= 0 && xb < d) {
-                                float v_x =
-                                    v_y * ((xl == 0) ? 1.0f - xbin : xbin);
-                                for (int ol = 0; ol <= 1; ol++) {
-                                    int ob = (o0 + ol) % n;
-                                    float v_o =
-                                        v_x * ((ol == 0) ? 1.0f - obin : obin);
-                                    desc[(yb * d + xb) * n + ob] += v_o;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        Array<float> features =
+            createEmptyArray<float>(af::dim4(4, indices.size()));
+        Array<unsigned> outputIndices =
+            createEmptyArray<unsigned>(af::dim4(indices.size()));
+        float* featureData = features.getHostPtr();
+        unsigned* indexData = outputIndices.getHostPtr();
+        for (size_t i = 0; i < indices.size(); i++) {
+            const unsigned f = indices[i];
+            featureData[i * 4 + 0] = x_in[f];
+            featureData[i * 4 + 1] = y_in[f];
+            featureData[i * 4 + 2] = size_in[f];
+            featureData[i * 4 + 3] = ori_in[f];
+            indexData[i] = f;
         }
 
-        normalizeDesc(desc, desc_len);
-
-        for (int i = 0; i < (int)desc_len; i++)
-            desc[i] = min(desc[i], DescrMagThr);
-
-        normalizeDesc(desc, desc_len);
-
-        // Calculate final descriptor values
-        for (int k = 0; k < (int)desc_len; k++) {
-            desc_out[f * desc_len + k] =
-                round(min(255.f, desc[k] * IntDescrFctr));
-        }
+        const Array<float>& image =
+            gauss_pyr[octave * (n_layers + 3) + layer];
+        kernel::siftDescriptorMetal(desc_out, features, outputIndices, image,
+                                    indices.size(), scale);
+        featureDataLifetime.push_back(std::move(features));
+        featureIndexLifetime.push_back(std::move(outputIndices));
     }
 }
 
@@ -758,7 +697,8 @@ void computeGLOHDescriptor(float* desc_out, const unsigned desc_len,
 
 template<typename T, typename convAccT>
 Array<T> createInitialImage(const Array<T>& img, const float init_sigma,
-                            const bool double_input) {
+                            const bool double_input,
+                            std::vector<Array<T>>& retained_filters) {
     af::dim4 idims = img.dims();
 
     Array<T> init_img = createEmptyArray<T>(af::dim4());
@@ -771,6 +711,7 @@ Array<T> createInitialImage(const Array<T>& img, const float init_sigma,
                                         0.1f);
 
     Array<T> filter = gauss_filter<T>(s);
+    retained_filters.push_back(filter);
 
     if (double_input) {
         Array<T> double_img =
@@ -787,7 +728,8 @@ template<typename T, typename convAccT>
 std::vector<Array<T>> buildGaussPyr(const Array<T>& init_img,
                                     const unsigned n_octaves,
                                     const unsigned n_layers,
-                                    const float init_sigma) {
+                                    const float init_sigma,
+                                    std::vector<Array<T>>& retained_filters) {
     // Precompute Gaussian sigmas using the following formula:
     // \sigma_{total}^2 = \sigma_{i}^2 + \sigma_{i-1}^2
     std::vector<float> sig_layers(n_layers + 3);
@@ -816,6 +758,7 @@ std::vector<Array<T>> buildGaussPyr(const Array<T>& init_img,
                                            sdims[1] / 2, AF_INTERP_BILINEAR);
             } else {
                 Array<T> filter = gauss_filter<T>(sig_layers[l]);
+                retained_filters.push_back(filter);
 
                 gauss_pyr[idx] = convolve2<T, convAccT>(gauss_pyr[src_idx],
                                                         filter, filter, false);
@@ -866,14 +809,19 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
 
     const unsigned n_octaves = floor(log(min_dim) / log(2)) - 2;
 
-    Array<T> init_img =
-        createInitialImage<T, convAccT>(in, init_sigma, double_input);
+    std::vector<Array<T>> retained_filters;
+    Array<T> init_img = createInitialImage<T, convAccT>(
+        in, init_sigma, double_input, retained_filters);
 
     std::vector<Array<T>> gauss_pyr =
-        buildGaussPyr<T, convAccT>(init_img, n_octaves, n_layers, init_sigma);
+        buildGaussPyr<T, convAccT>(init_img, n_octaves, n_layers, init_sigma,
+                                  retained_filters);
 
     std::vector<Array<T>> dog_pyr =
         buildDoGPyr<T>(gauss_pyr, n_octaves, n_layers);
+
+    // SIFT postprocessing reads these shared Metal buffers on the CPU.
+    getQueue().sync();
 
     vector<buffer_ptr> x_pyr(n_octaves);
     vector<buffer_ptr> y_pyr(n_octaves);
@@ -881,6 +829,10 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
     vector<buffer_ptr> size_pyr(n_octaves);
     vector<buffer_ptr> ori_pyr(n_octaves);
     vector<buffer_ptr> desc_pyr(n_octaves);
+    vector<Array<float>> metal_desc_pyr(
+        n_octaves, createEmptyArray<float>(af::dim4()));
+    vector<Array<float>> descriptor_feature_lifetime;
+    vector<Array<unsigned>> descriptor_index_lifetime;
     vector<unsigned> feat_pyr(n_octaves, 0);
     unsigned total_feat = 0;
 
@@ -999,12 +951,15 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
 
         if (oriented_feat == 0) { continue; }
 
-        auto desc = memAlloc<float>(oriented_feat * desc_len);
+        buffer_ptr desc;
+        Array<float> metal_desc = createEmptyArray<float>(af::dim4());
+        bool use_metal_descriptor = false;
 
         float scale = 1.f / (1 << i);
         if (double_input) scale *= 2.f;
 
-        if (compute_GLOH)
+        if (compute_GLOH) {
+            desc = memAlloc<float>(oriented_feat * desc_len);
             computeGLOHDescriptor<T>(
                 bufferData<float>(desc.get()), desc_len,
                 bufferData<float>(oriented_x.get()),
@@ -1014,16 +969,22 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
                 bufferData<float>(oriented_size.get()),
                 bufferData<float>(oriented_ori.get()), oriented_feat, gauss_pyr,
                 d, rb, ab, hb, scale, i, n_layers);
-        else
-            computeDescriptor<T>(
-                bufferData<float>(desc.get()), desc_len,
-                bufferData<float>(oriented_x.get()),
+        } else if constexpr (std::is_same<T, float>::value) {
+            metal_desc = createEmptyArray<float>(
+                af::dim4(desc_len, oriented_feat));
+            computeDescriptorMetal(
+                metal_desc, bufferData<float>(oriented_x.get()),
                 bufferData<float>(oriented_y.get()),
                 bufferData<unsigned>(oriented_layer.get()),
-                bufferData<float>(oriented_response.get()),
                 bufferData<float>(oriented_size.get()),
                 bufferData<float>(oriented_ori.get()), oriented_feat, gauss_pyr,
-                d, n, scale, i, n_layers);
+                scale, i, n_layers, descriptor_feature_lifetime,
+                descriptor_index_lifetime);
+            use_metal_descriptor = true;
+        } else {
+            AF_ERROR("Metal SIFT supports only single precision",
+                     AF_ERR_NO_DBL);
+        }
 
         total_feat += oriented_feat;
         feat_pyr[i] = oriented_feat;
@@ -1034,7 +995,10 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
             response_pyr[i] = std::move(oriented_response);
             ori_pyr[i]      = std::move(oriented_ori);
             size_pyr[i]     = std::move(oriented_size);
-            desc_pyr[i]     = std::move(desc);
+            if (use_metal_descriptor)
+                metal_desc_pyr[i] = std::move(metal_desc);
+            else
+                desc_pyr[i] = std::move(desc);
         }
     }
 
@@ -1067,15 +1031,23 @@ unsigned sift_impl(Array<float>& x, Array<float>& y, Array<float>& score,
                            featureBytes) &&
                 copyBuffer(size.getBuffer(), featureOffset, size_pyr[i].get(),
                            0, featureBytes) &&
-                copyBuffer(desc.getBuffer(),
-                           offset * desc_len * sizeof(float),
-                           desc_pyr[i].get(), 0,
-                           feat_pyr[i] * desc_len * sizeof(float));
+                (metal_desc_pyr[i].elements() > 0
+                     ? copyBuffer(desc.getBuffer(),
+                                  offset * desc_len * sizeof(float),
+                                  metal_desc_pyr[i].getBuffer(), 0,
+                                  feat_pyr[i] * desc_len * sizeof(float))
+                     : copyBuffer(desc.getBuffer(),
+                                  offset * desc_len * sizeof(float),
+                                  desc_pyr[i].get(), 0,
+                                  feat_pyr[i] * desc_len * sizeof(float)));
             if (!copied) {
                 AF_ERROR("Could not copy Metal SIFT buffers", AF_ERR_RUNTIME);
             }
             offset += feat_pyr[i];
         }
+        // Keep per-layer feature staging arrays and descriptor buffers alive
+        // until their Metal work and final copies have completed.
+        getQueue().sync();
     }
 
     return total_feat;

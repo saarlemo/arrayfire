@@ -3060,6 +3060,58 @@ void siftSubtractMetal(Array<float>& output, const Array<float>& first,
                          "SIFT pyramid subtraction");
 }
 
+void siftDescriptorMetal(Array<float>& output, const Array<float>& features,
+                         const Array<unsigned>& outputIndices,
+                         const Array<float>& image, const unsigned count,
+                         const float scale) {
+    if (count == 0) return;
+    if (!output.bufferParam().buffer || !features.bufferParam().buffer ||
+        !outputIndices.bufferParam().buffer || !image.bufferParam().buffer) {
+        AF_ERROR("Could not allocate Metal SIFT descriptor buffers",
+                 AF_ERR_NO_MEM);
+    }
+
+    struct SiftDescriptorParams {
+        uint32_t featureCount;
+        uint32_t rows;
+        uint32_t columns;
+        float scale;
+    } p{count, uint32_t(image.dims()[0]), uint32_t(image.dims()[1]), scale};
+
+    const BufferParam imageParam = image.bufferParam();
+    const BufferParam featureParam = features.bufferParam();
+    const BufferParam indexParam = outputIndices.bufferParam();
+    const BufferParam outputParam = output.bufferParam();
+
+    auto commandBuffer = NS::RetainPtr(metalCommandQueue()->commandBuffer());
+    auto encoder = commandBuffer
+                       ? NS::RetainPtr(commandBuffer->computeCommandEncoder())
+                       : nullptr;
+    if (!commandBuffer || !encoder) {
+        AF_ERROR("Could not create a Metal command encoder", AF_ERR_RUNTIME);
+    }
+    auto* pipeline = metalPipeline("sift_descriptor_float");
+    if (pipeline->maxTotalThreadsPerThreadgroup() < 128) {
+        AF_ERROR("Metal SIFT descriptor requires 128 threads per threadgroup",
+                 AF_ERR_NOT_SUPPORTED);
+    }
+    encoder->setComputePipelineState(pipeline);
+    encoder->setBuffer(imageParam.buffer, imageParam.offset, 0);
+    encoder->setBuffer(featureParam.buffer, featureParam.offset, 1);
+    encoder->setBuffer(indexParam.buffer, indexParam.offset, 2);
+    encoder->setBuffer(outputParam.buffer, outputParam.offset, 3);
+    encoder->setBytes(&p, sizeof(p), 4);
+    encoder->dispatchThreadgroups(MTL::Size(1, count, 1),
+                                 MTL::Size(128, 1, 1));
+    encoder->endEncoding();
+    submitCommandBuffer(commandBuffer.get());
+    if (commandBuffer->status() == MTL::CommandBufferStatusError) {
+        const std::string message = metalErrorDescription(
+            commandBuffer->error(), "Metal SIFT descriptor failed");
+        AF_ERROR(message.c_str(), AF_ERR_RUNTIME);
+    }
+}
+
 void arrayAddMetal(Param<float> output, CParam<float> left,
                    CParam<float> right) {
     ArrayAddParams p{};
