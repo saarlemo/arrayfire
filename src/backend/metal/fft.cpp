@@ -24,7 +24,9 @@ using af::dim4;
 namespace arrayfire {
 namespace metal {
 
-void setFFTPlanCacheSize(size_t numPlans) { UNUSED(numPlans); }
+void setFFTPlanCacheSize(size_t numPlans) {
+    setMetalFFTPlanCacheSize(numPlans);
+}
 
 template<typename T>
 void fft_inplace(Array<T> &in, const int rank, const bool direction) {

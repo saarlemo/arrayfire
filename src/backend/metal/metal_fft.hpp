@@ -8,6 +8,7 @@
 #pragma once
 
 #include <af/dim4.hpp>
+#include <cstddef>
 
 namespace MTL {
 class Buffer;
@@ -15,6 +16,8 @@ class Buffer;
 
 namespace arrayfire {
 namespace metal {
+
+void setMetalFFTPlanCacheSize(size_t numPlans);
 
 // MPSGraph's FFT operations are exposed through Objective-C. These small
 // wrappers keep that boundary out of the backend's normal C++ translation
