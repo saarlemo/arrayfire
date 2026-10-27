@@ -129,6 +129,103 @@ inline void convolveImpl(const device InT* signal,
     output[outputIndex] = convStore<InT, AccT>(sum);
 }
 
+// Experimental regular rank-2 path for large square filters. Each group
+// stages the complete signal halo used by an 8x8 output tile once. The
+// validity plane preserves the scalar kernel's OOB-tap skip semantics,
+// including when a filter coefficient is NaN or infinite.
+template <uint FilterSize>
+inline void convolveTiled2DImpl(
+    const device float* signal, const device float* filter,
+    device float* output, constant ConvolveParams& p,
+    threadgroup float* signalTile, threadgroup uchar* validTile,
+    threadgroup float* filterTile, const uint2 localID,
+    const uint2 groupID) {
+    constexpr uint tileOutputWidth  = 8;
+    constexpr uint tileOutputHeight = 8;
+    constexpr uint tileWidth = tileOutputWidth + FilterSize - 1;
+    constexpr uint tileHeight = tileOutputHeight + FilterSize - 1;
+    constexpr uint tileElements = tileWidth * tileHeight;
+    constexpr uint filterElements = FilterSize * FilterSize;
+
+    const long anchorX = p.expand ? 0 : long(FilterSize / 2);
+    const long anchorY = p.expand ? 0 : long(FilterSize / 2);
+    const long tileOriginX = long(groupID.x * tileOutputWidth) + anchorX -
+                             long(FilterSize - 1);
+    const long tileOriginY = long(groupID.y * tileOutputHeight) + anchorY -
+                             long(FilterSize - 1);
+    const uint threadLinear = localID.y * tileOutputWidth + localID.x;
+    const uint threadCount = tileOutputWidth * tileOutputHeight;
+
+    for (uint i = threadLinear; i < tileElements; i += threadCount) {
+        const uint tx = i % tileWidth;
+        const uint ty = i / tileWidth;
+        const long sx = tileOriginX + long(tx);
+        const long sy = tileOriginY + long(ty);
+        const bool inBounds = sx >= 0 && sy >= 0 &&
+                              sx < long(p.signalDims[0]) &&
+                              sy < long(p.signalDims[1]);
+        validTile[i] = inBounds ? 1 : 0;
+        signalTile[i] = inBounds
+                            ? signal[ulong(sx) * p.signalStrides[0] +
+                                     ulong(sy) * p.signalStrides[1]]
+                            : 0.0f;
+    }
+
+    for (uint i = threadLinear; i < filterElements; i += threadCount) {
+        const uint fx = i % FilterSize;
+        const uint fy = i / FilterSize;
+        filterTile[i] = filter[ulong(fx) * p.filterStrides[0] +
+                               ulong(fy) * p.filterStrides[1]];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const ulong ox = ulong(groupID.x * tileOutputWidth + localID.x);
+    const ulong oy = ulong(groupID.y * tileOutputHeight + localID.y);
+    if (ox >= p.outputDims[0] || oy >= p.outputDims[1]) return;
+
+    float sum = 0.0f;
+    for (uint fy = 0; fy < FilterSize; ++fy) {
+        const uint tileY = localID.y + FilterSize - 1 - fy;
+        for (uint fx = 0; fx < FilterSize; ++fx) {
+            const uint tileX = localID.x + FilterSize - 1 - fx;
+            const uint tileIndex = tileY * tileWidth + tileX;
+            if (validTile[tileIndex]) {
+                sum += signalTile[tileIndex] * filterTile[fy * FilterSize + fx];
+            }
+        }
+    }
+
+    output[ox * p.outputStrides[0] + oy * p.outputStrides[1]] = sum;
+}
+
+kernel void convolve_float_tiled_7(
+    const device float* signal [[buffer(0)]],
+    const device float* filter [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant ConvolveParams& p [[buffer(3)]],
+    uint2 localID [[thread_position_in_threadgroup]],
+    uint2 groupID [[threadgroup_position_in_grid]]) {
+    threadgroup float signalTile[22 * 22];
+    threadgroup uchar validTile[22 * 22];
+    threadgroup float filterTile[15 * 15];
+    convolveTiled2DImpl<7>(signal, filter, output, p, signalTile, validTile,
+                           filterTile, localID, groupID);
+}
+
+kernel void convolve_float_tiled_15(
+    const device float* signal [[buffer(0)]],
+    const device float* filter [[buffer(1)]],
+    device float* output [[buffer(2)]],
+    constant ConvolveParams& p [[buffer(3)]],
+    uint2 localID [[thread_position_in_threadgroup]],
+    uint2 groupID [[threadgroup_position_in_grid]]) {
+    threadgroup float signalTile[22 * 22];
+    threadgroup uchar validTile[22 * 22];
+    threadgroup float filterTile[15 * 15];
+    convolveTiled2DImpl<15>(signal, filter, output, p, signalTile, validTile,
+                            filterTile, localID, groupID);
+}
+
 template<typename InT, typename AccT>
 inline void separableConvolveImpl(const device InT* signal,
                                   const device AccT* filter,

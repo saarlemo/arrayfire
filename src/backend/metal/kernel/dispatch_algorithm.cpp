@@ -1545,9 +1545,11 @@ void launchMetalConvolve(
     BufferParam filter, const af::dim4& filterDims,
     const af::dim4& filterStrides, const AF_BATCH_KIND kind, const int rank,
     const bool expand, const af_dtype inputType, const af_dtype filterType) {
-    const char* functionName =
+    if (outputDims.elements() == 0) return;
+
+    const char* scalarFunctionName =
         convolveFunctionName(inputType, filterType, false);
-    if (!functionName) {
+    if (!scalarFunctionName) {
         AF_ERROR("Input type is not supported by the Metal convolution kernel",
                  AF_ERR_NOT_SUPPORTED);
     }
@@ -1568,6 +1570,23 @@ void launchMetalConvolve(
     p.expand    = expand;
     p.batchKind = static_cast<uint32_t>(kind);
 
+    // Keep the experiment tightly scoped: only unbatched f32 rank-2
+    // convolutions with 7x7 or 15x15 filters use the full-halo kernel.
+    const bool unitBatchDims = outputDims[2] == 1 && outputDims[3] == 1 &&
+                               signalDims[2] == 1 && signalDims[3] == 1 &&
+                               filterDims[2] == 1 && filterDims[3] == 1;
+    const bool supportedTileFilter = filterDims[0] == filterDims[1] &&
+                                     (filterDims[0] == 7 ||
+                                      filterDims[0] == 15);
+    const bool useTiledKernel = inputType == f32 && filterType == f32 &&
+                                rank == 2 && kind == AF_BATCH_NONE &&
+                                unitBatchDims && supportedTileFilter;
+    const char* functionName = scalarFunctionName;
+    if (useTiledKernel) {
+        functionName = filterDims[0] == 7 ? "convolve_float_tiled_7"
+                                          : "convolve_float_tiled_15";
+    }
+
     auto commandBuffer =
         NS::RetainPtr(metalCommandQueue()->commandBuffer());
     auto encoder = commandBuffer
@@ -1583,11 +1602,22 @@ void launchMetalConvolve(
     encoder->setBuffer(filter.buffer, filter.offset, 1);
     encoder->setBuffer(output.buffer, output.offset, 2);
     encoder->setBytes(&p, sizeof(p), 3);
-    const auto width = std::min<NS::UInteger>(
-        256, pipeline->maxTotalThreadsPerThreadgroup());
-    encoder->dispatchThreads(
-        MTL::Size(static_cast<NS::UInteger>(outputDims.elements()), 1, 1),
-        MTL::Size(width, 1, 1));
+    if (useTiledKernel) {
+        constexpr NS::UInteger tileWidth  = 8;
+        constexpr NS::UInteger tileHeight = 8;
+        const auto groupsX = static_cast<NS::UInteger>(
+            (outputDims[0] + tileWidth - 1) / tileWidth);
+        const auto groupsY = static_cast<NS::UInteger>(
+            (outputDims[1] + tileHeight - 1) / tileHeight);
+        encoder->dispatchThreadgroups(MTL::Size(groupsX, groupsY, 1),
+                                      MTL::Size(tileWidth, tileHeight, 1));
+    } else {
+        const auto width = std::min<NS::UInteger>(
+            256, pipeline->maxTotalThreadsPerThreadgroup());
+        encoder->dispatchThreads(
+            MTL::Size(static_cast<NS::UInteger>(outputDims.elements()), 1, 1),
+            MTL::Size(width, 1, 1));
+    }
     encoder->endEncoding();
     submitCommandBuffer(commandBuffer.get());
 }
